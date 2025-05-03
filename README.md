@@ -14,120 +14,85 @@
 - 000AF9BA9013F87F.DLGE
 
 
-# HITMAN-III-JSON-Editor
-This program is designed to help you view, search, and edit specific text content within a collection of JSON files, particularly those used in games like HITMAN III that follow a certain structure. It focuses on finding JSON objects containing "Language": "en" and allows editing the associated "String" value, especially when that string contains timecoded segments like //(start,end)\\text.
-
-Download HITMAN-III-JSON-Editor
+[Download HITMAN-III-JSON-Editor](https://github.com/MrGamesKingPro/HITMAN-III-JSON-Editor/releases/tag/HITMAN-III-JSON-Editor)
 
 Or use a version Python
 
-Install Libraries
+# HITMAN-III-JSON-Editor
 
-pip install ttkbootstrap
+**Purpose:**
 
-# How to Use:
+This program is designed to help you view, search, and edit specific text content within JSON files, particularly those structured like dialogue or subtitle files used in games (like Hitman). It focuses on finding JSON objects with `"Language": "en"` and then allows editing the text associated with the `"String"` key, especially handling text split into segments marked by timecodes like `//(start,end)\\`.
 
+**How to Use:**
 
-    Launch the Application: Run the Python script. A window titled "HITMAN III JSON Editor" will appear.
+1.  **Launch the Application:** Run the Python script. The main window will appear.
 
-    Select Folders (Crucial First Step):
+2.  **Select Folders (Crucial First Step):**
+    *   **Input Folder:** Click the `Select Input Folder` button. Browse to and select the directory containing the `.json` files you want to examine or edit. The program will automatically scan this folder for compatible files once selected.
+    *   **Output Folder:** Click the `Select Output Folder` button. Browse to and select a **different** folder where any modified files will be saved. **Important:** The output folder *must not* be the same as the input folder to prevent accidentally overwriting your original files.
 
-        Input Folder: Click the "Select Input Folder" button. Navigate to and choose the folder containing the .json files you want to examine or edit. The path will appear in the read-only box next to the button.
+3.  **Loading Data:**
+    *   Once you select an input folder, the program automatically reads the `.json` files inside it (ignoring `.json.meta` files).
+    *   It looks for JSON objects that contain `"Language": "en"`.
+    *   For each found object, it takes the value associated with the `"String"` key.
+    *   It uses a regular expression (`//(start,end)\\text`) to split the "String" value into segments based on timecode-like prefixes. If no such prefixes are found, the entire string is treated as one segment.
+    *   The program populates the central table (Treeview) with this data.
 
-        Output Folder: Click the "Select Output Folder" button. Navigate to and choose a DIFFERENT folder where any modified files will be saved. Do not select the same folder as the input folder. This prevents accidentally overwriting your original files. The chosen path will appear in its box.
+4.  **Navigating the Data Table:**
+    *   The main table displays the loaded data:
+        *   **Line #:** Shows the approximate line number in the *original* JSON file where the `"String":` key was found for the corresponding English entry. This helps locate the original data if needed. (`??` means the line number couldn't be determined reliably).
+        *   **Timecode:** Shows the `//(start,end)\\` prefix found before the text segment. This column will be empty if the string wasn't segmented this way.
+        *   **Text:** Shows the actual text segment that you can edit.
+    *   **File Headers:** Grey rows starting with `--- File:` act as separators between data from different files. Double-clicking a file header row will attempt to open the original `.json` file using your system's default application for JSON files.
+    *   Use the vertical and horizontal scrollbars to view all the data if it doesn't fit in the window.
 
-    Loading Data:
+5.  **Editing Text:**
+    *   Find the row containing the text segment you want to change.
+    *   **Double-click** directly on the cell in the **Text** column for that row.
+    *   An edit box will appear directly over the cell, containing the current text.
+    *   Type your desired changes.
+    *   Press **Enter** or **Return** on your keyboard to confirm and save the change (within the program's memory for now).
+    *   Press the **Escape** key to cancel the edit and revert to the previous text.
+    *   Clicking outside the edit box will also typically confirm the change (unless you pressed Escape just before).
 
-        Once you select a valid input folder, the application automatically scans it for .json files (ignoring .json.meta files).
+6.  **Searching:**
+    *   Type the text you want to find into the **Search Text** box at the top.
+    *   Press **Enter** or click the `Find` button.
+    *   The program searches (case-insensitively) within the **Text** column of all loaded segments.
+    *   Matching rows will be highlighted (typically in yellow or another theme-appropriate color).
+    *   The first match will be selected and scrolled into view.
+    *   Use the `Next` and `Previous` buttons to jump between the highlighted matches.
+    *   The status bar at the bottom will show how many matches were found.
+    *   Clearing the search box (and pressing Enter or moving focus away) will remove the highlights and clear the search results. Shortcut: `Ctrl+F` (or `Cmd+F` on Mac) focuses the search box.
 
-        It reads each JSON file and looks for objects that have the key-value pair "Language": "en".
+7.  **Copy / Cut / Paste:**
+    *   These standard editing operations work on the **Text** column data.
+    *   **Select a row** containing data (not a file header or separator).
+    *   **Right-click** on the selected row to open the context menu and choose `Copy`, `Cut`, or `Paste`.
+    *   Alternatively, use the **Edit** menu in the menu bar.
+    *   Standard keyboard shortcuts also work:
+        *   `Ctrl+C` (or `Cmd+C` on Mac) to Copy
+        *   `Ctrl+X` (or `Cmd+X` on Mac) to Cut (copies the text and clears the cell)
+        *   `Ctrl+V` (or `Cmd+V` on Mac) to Paste (replaces the selected cell's text with clipboard content)
+    *   Paste is only enabled if the clipboard contains text and you have selected an editable data row.
 
-        For each "en" string found, it checks if the text contains segments marked like //(some_timecode)\\Actual Text.
+8.  **Saving Changes:**
+    *   After making edits, you need to save them to files.
+    *   Click the `Save All Changes` button in the bottom-right corner, or go to `File` -> `Save All Changes` in the menu bar. The shortcut `Ctrl+S` (or `Cmd+S` on Mac) also works.
+    *   **Important:** This action checks *all* the loaded data against the original files. For *each file where you made at least one edit*, it reconstructs the full JSON content with your changes and writes a *new* file with the *same name* into the **Output Folder** you selected earlier.
+    *   Files that were not edited will *not* be copied or saved to the output folder.
+    *   A message will confirm how many files were processed and saved. If errors occur during saving, they will usually be mentioned in a message box and/or printed to the console if you ran the script from one.
+    *   The "Save" button and menu item are only enabled when both Input and Output folders are selected and data has been loaded.
 
-        The data is then displayed in the main table (Treeview):
+9.  **Changing Themes:**
+    *   Go to the `View` -> `Theme` menu.
+    *   Select `Light`, `Dark`, or `Red/Dark` to change the application's color scheme.
 
-            Line #: Shows the approximate line number in the original source file where the "String": key was found for this entry (useful for reference, but might be inaccurate if the file structure is complex or comments interfere). It shows '??' if the line number couldn't be reliably determined.
+10. **Help and About:**
+    *   Use the `Help` menu for `Instructions` (a summary similar to this explanation) or `About` (version and credit information).
 
-            Timecode: Displays the //(timecode)\\ part if the string was segmented. If the string wasn't segmented, this column is empty.
+11. **Exiting:**
+    *   Close the window or select `File` -> `Exit`.
 
-            Text: Shows the actual text content following the timecode (or the entire string if no timecode segment was found). This is the column you can edit.
-
-        File Headers: Each file containing editable "en" strings is separated by a grey header row (e.g., --- File: your_file_name.json (Double-click to open) ---). Double-clicking this header row will attempt to open the original .json file in your system's default text/JSON editor.
-
-        Separators: Light grey lines separate the content of different files visually.
-
-        Status Bar: The bottom bar provides feedback (e.g., "Status: Loading...", "Status: Loaded X files...", "Status: Saving...").
-
-    Browsing and Editing:
-
-        Scroll through the table to view the extracted text segments.
-
-        To edit text: Double-click directly on a cell in the Text column. An editing box will appear over the cell.
-
-        Type your changes in the box.
-
-        Press Enter or Return to confirm and save the change within the application's memory (it's not saved to a file yet).
-
-        Press Escape to cancel the edit without saving changes to that cell.
-
-        Clicking outside the edit box will also attempt to save the change.
-
-    Searching:
-
-        Type the text you want to find into the "Search Text:" box at the top.
-
-        Press Enter or click the Find button.
-
-        Matching text segments will be highlighted (typically yellow or gold, depending on the theme).
-
-        The status bar will indicate how many matches were found.
-
-        Use the Next and Previous buttons to jump between highlighted matches.
-
-        Clearing the search box (and pressing Enter or losing focus) or modifying the text will clear the highlights and search results. You can also press Ctrl+F (or Cmd+F on Mac) to focus the search box.
-
-    Copy / Cut / Paste:
-
-        You can copy, cut, or paste text from/to the editable "Text" cells:
-
-            Right-Click: Right-click on a text cell (not a header or separator) to open a context menu with Copy, Cut, and Paste options. Paste is only enabled if the clipboard contains text.
-
-            Edit Menu: Use the "Edit" menu in the main menu bar.
-
-            Keyboard Shortcuts: Use standard shortcuts (Ctrl+C, Ctrl+X, Ctrl+V on Windows/Linux; Cmd+C, Cmd+X, Cmd+V on macOS).
-
-    Saving Changes to Files:
-
-        When you are ready to save your edits:
-
-            Click the Save All Changes button in the bottom-right corner.
-
-            Or, go to the File menu and select Save All Changes.
-
-            Or, use the keyboard shortcut (Ctrl+S on Windows/Linux; Cmd+S on macOS).
-
-        The application will:
-
-            Go through all the files it originally loaded.
-
-            For each file where you made at least one edit, it reconstructs the modified "String" values (rejoining prefixes and edited text).
-
-            It saves a new version of the modified JSON file into your selected Output Folder.
-
-            Files that were not edited will not be saved to the output folder.
-
-        A message box will confirm success or report any errors encountered during saving. Check the console/terminal output for more detailed error messages if needed.
-
-    Changing Themes:
-
-        Go to the View menu -> Theme.
-
-        Select "Light", "Dark", or "Red/Dark" to change the application's color scheme.
-
-    Help and About:
-
-        Use the Help menu for basic instructions ("Help" > "Instructions") or information about the application ("Help" > "About").
-
-    Exiting:
-
-        Close the window or use File > Exit. You will not be prompted to save unsaved changes automatically, so make sure to use "Save All Changes" before exiting if you want to keep your edits.
+This covers the main functionality. The core workflow is: select folders -> browse/search -> double-click to edit -> save all changes.
