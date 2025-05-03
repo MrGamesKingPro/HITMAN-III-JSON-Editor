@@ -96,3 +96,4 @@ This program is designed to help you view, search, and edit specific text conten
     *   Close the window or select `File` -> `Exit`.
 
 This covers the main functionality. The core workflow is: select folders -> browse/search -> double-click to edit -> save all changes.
+
