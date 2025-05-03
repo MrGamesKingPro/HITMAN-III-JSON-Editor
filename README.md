@@ -20,6 +20,9 @@ Or use a version Python
 
 # HITMAN-III-JSON-Editor
 
+![hitman3](https://github.com/user-attachments/assets/ba3c406a-537a-4e12-9824-77afe9425382)
+
+
 **Purpose:**
 
 This program is designed to help you view, search, and edit specific text content within JSON files, particularly those structured like dialogue or subtitle files used in games (like Hitman). It focuses on finding JSON objects with `"Language": "en"` and then allows editing the text associated with the `"String"` key, especially handling text split into segments marked by timecodes like `//(start,end)\\`.
