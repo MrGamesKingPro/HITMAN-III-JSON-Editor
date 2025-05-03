@@ -20,7 +20,7 @@ Or use a version Python
 
 # HITMAN-III-JSON-Editor
 
-![hitman3](https://github.com/user-attachments/assets/ba3c406a-537a-4e12-9824-77afe9425382)
+![hitman3](https://github.com/user-attachments/assets/3f368f1e-ec09-407b-9075-778efd77c240)
 
 
 **Purpose:**
