@@ -6,9 +6,9 @@
 - example folder chunk0.rpkg
 - Inside the folder example :
 - 000AB9F9BA9C7D46.DLGE.JSON
-or
+
 - 0000DB5028ADFA16.LOCR.JSON
-or
+
 - 0099F3A8C676439A.RTLV.JSON
 
 
