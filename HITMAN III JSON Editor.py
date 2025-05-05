@@ -1,13 +1,17 @@
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, Menu, font # Import Menu, font
+from tkinter import ttk, filedialog, messagebox, Menu, font
 import json
 import os
 import re
 import pathlib
 import webbrowser
-from collections import defaultdict
+from collections import defaultdict, deque # Import deque for Undo/Redo
 import platform # To check OS for key bindings
 import copy # Needed for deepcopy during save if desired, though shallow is used now
+import subprocess # Needed for opening folders on macOS/Linux
+import configparser # Added for saving/loading state
+import csv # Added for TSV export/import
+import traceback # For more detailed error logging if needed
 
 # Regular expression to find segments like //(start,end)\\text
 # Capture groups: 1: full prefix, 2: text
@@ -21,123 +25,123 @@ STRING_KEY_REGEX = re.compile(r'"String"\s*:')
 
 # --- Constants ---
 COL_LINE = "#1"
-COL_TIMECODE = "#2"
+COL_ID = "#2" # Renamed from COL_TIMECODE
 COL_DIALOGUE = "#3" # Or use a symbolic name like 'dialogue' - using #3 for direct comparison
 
 DIALOGUE_COLUMN_ID = COL_DIALOGUE # Explicitly use #3
+ID_COLUMN_ID = COL_ID # Explicitly use #2 for Timecode/Hash
 FILE_HEADER_TAG = 'file_header' # Define a constant for the tag
 SEPARATOR_TAG = 'separator'
 SEARCH_HIGHLIGHT_TAG = 'search_highlight' # Tag for search results
+CONFIG_FILE_NAME = "H-III-Config.ini" # Config file name
+APP_VERSION = "1.2" # <<<< Slightly incremented version for consistency
 
-# --- Theme Colors ---
+# --- File Formats ---
+FORMAT_DLGE = 'DLGE'
+FORMAT_LOCR = 'LOCR'
+FORMAT_UNKNOWN = 'UNKNOWN'
+
+# --- Theme Colors (Unchanged) ---
 THEMES = {
     "Light": {
-        "bg": "#F0F0F0",
-        "fg": "black",
-        "entry_bg": "white",
-        "entry_fg": "black",
-        "tree_bg": "white",
-        "tree_fg": "black",
-        "tree_selected_bg": "#0078D7", # System highlight blue
-        "tree_selected_fg": "white",
-        "header_bg": "#E0E0E0",
-        "header_fg": "black",
-        "separator_bg": "#F5F5F5",
-        "search_bg": "yellow",
-        "search_fg": "black",
-        "button_bg": "#E1E1E1", # Default button look
-        "button_fg": "black",
-        "status_bg": "#F0F0F0",
-        "status_fg": "black",
-        "disabled_fg": "#A0A0A0",
-        "menu_bg": "#F0F0F0", # Added for menu
-        "menu_fg": "black", # Added for menu
-        "menu_active_bg": "#0078D7", # Added for menu
-        "menu_active_fg": "white", # Added for menu
+        "bg": "#F0F0F0", "fg": "black", "entry_bg": "white", "entry_fg": "black",
+        "tree_bg": "white", "tree_fg": "black", "tree_selected_bg": "#0078D7", "tree_selected_fg": "white",
+        "header_bg": "#E0E0E0", "header_fg": "black", "separator_bg": "#F5F5F5",
+        "search_bg": "yellow", "search_fg": "black", "button_bg": "#E1E1E1", "button_fg": "black",
+        "status_bg": "#F0F0F0", "status_fg": "black", "disabled_fg": "#A0A0A0",
+        "menu_bg": "#F0F0F0", "menu_fg": "black", "menu_active_bg": "#0078D7", "menu_active_fg": "white",
+        "entry_context_bg": "#FFFFFF", "entry_context_fg": "#000000",
+        "entry_context_active_bg": "#0078D7", "entry_context_active_fg": "#FFFFFF",
     },
     "Dark": {
-        "bg": "#2E2E2E",
-        "fg": "#EAEAEA",
-        "entry_bg": "#3C3C3C",
-        "entry_fg": "#EAEAEA",
-        "tree_bg": "#252525",
-        "tree_fg": "#EAEAEA",
-        "tree_selected_bg": "#5E5E5E", # Darker selection
-        "tree_selected_fg": "#EAEAEA",
-        "header_bg": "#7D7D7D", # file name
-        "header_fg": "#EAEAEA",
-        "separator_bg": "#333333",
-        "search_bg": "#B8860B", # Dark Goldenrod
-        "search_fg": "black",
-        "button_bg": "#505050",
-        "button_fg": "#EAEAEA",
-        "status_bg": "#2E2E2E",
-        "status_fg": "#EAEAEA",
-        "disabled_fg": "#707070",
-        "menu_bg": "#2E2E2E", # Added for menu
-        "menu_fg": "#EAEAEA", # Added for menu
-        "menu_active_bg": "#5E5E5E", # Added for menu
-        "menu_active_fg": "#EAEAEA", # Added for menu
+        "bg": "#2E2E2E", "fg": "#EAEAEA", "entry_bg": "#3C3C3C", "entry_fg": "#EAEAEA",
+        "tree_bg": "#252525", "tree_fg": "#EAEAEA", "tree_selected_bg": "#5E5E5E", "tree_selected_fg": "#EAEAEA",
+        "header_bg": "#7D7D7D", "header_fg": "#EAEAEA", "separator_bg": "#333333",
+        "search_bg": "#B8860B", "search_fg": "black", "button_bg": "#505050", "button_fg": "#EAEAEA",
+        "status_bg": "#2E2E2E", "status_fg": "#EAEAEA", "disabled_fg": "#707070",
+        "menu_bg": "#2E2E2E", "menu_fg": "#EAEAEA", "menu_active_bg": "#5E5E5E", "menu_active_fg": "#EAEAEA",
+        "entry_context_bg": "#3C3C3C", "entry_context_fg": "#EAEAEA",
+        "entry_context_active_bg": "#5E5E5E", "entry_context_active_fg": "#EAEAEA",
     },
-        "Red/Dark": {
-        "bg": "#D30707", # background window
-        "fg": "#EAEAEA", # Text search
-        "entry_bg": "#3C3C3C", # box
-        "entry_fg": "#FFFFFF", # text s
-        "tree_bg": "#252525", # background text
-        "tree_fg": "#EAEAEA",# text
-        "tree_selected_bg": "#D30707", # Darker selection
-        "tree_selected_fg": "#EAEAEA", # text selection
-        "header_bg": "#AEAEAE", # background file name
-        "header_fg": "#000000", # text file name
-        "separator_bg": "#252525", # empty
-        "search_bg": "#B8860B", # Dark Goldenrod
-        "search_fg": "#FFFFFF",
-        "button_bg": "#003948", # button
-        "button_fg": "#FFFFFF", #  text box 
-        "status_bg": "#2E2E2E", #  box results
-        "status_fg": "#E8E8E8", # results
-        "disabled_fg": "#FFFFFF", # text save all & box
-        "menu_bg": "#2E2E2E", # Added for menu
-        "menu_fg": "#EAEAEA", # Added for menu
-        "menu_active_bg": "#D30707", # Added for menu
-        "menu_active_fg": "#EAEAEA", # Added for menu
+    "Red/Dark": {
+        "bg": "#D30707", "fg": "#EAEAEA", "entry_bg": "#3C3C3C", "entry_fg": "#FFFFFF",
+        "tree_bg": "#252525", "tree_fg": "#EAEAEA", "tree_selected_bg": "#D30707", "tree_selected_fg": "#EAEAEA",
+        "header_bg": "#AEAEAE", "header_fg": "#000000", "separator_bg": "#252525",
+        "search_bg": "#B8860B", "search_fg": "#FFFFFF", "button_bg": "#003948", "button_fg": "#FFFFFF",
+        "status_bg": "#2E2E2E", "status_fg": "#E8E8E8", "disabled_fg": "#FFFFFF",
+        "menu_bg": "#2E2E2E", "menu_fg": "#EAEAEA", "menu_active_bg": "#D30707", "menu_active_fg": "#EAEAEA",
+        "entry_context_bg": "#3C3C3C", "entry_context_fg": "#EAEAEA",
+        "entry_context_active_bg": "#D30707", "entry_context_active_fg": "#EAEAEA",
     }
 }
 
 class JsonEditorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("HITMAN III JSON Editor v1.1") # Simplified title with version
-        self.root.geometry("1100x800")
+        self.root.title(f"HITMAN JSON Editor v{APP_VERSION}") # Use constant
+        # Default geometry, will be overridden by config if available
+        self.root.geometry("1200x850")
 
         self.style = ttk.Style()
-        # Use a theme that allows easier color configuration if available
         available_themes = self.style.theme_names()
+        # Prefer clam for better consistency if available
         if 'clam' in available_themes:
              self.style.theme_use('clam')
-        elif 'alt' in available_themes:
+        elif 'alt' in available_themes: # Fallback to alt
              self.style.theme_use('alt')
-        # Default theme might be harder to customize fully
+        # Otherwise, use the system default
 
         # --- Data Structures ---
         self.input_folder = tk.StringVar()
         self.output_folder = tk.StringVar()
+        # self.file_data stores list of dicts, each dict representing a file:
+        # {
+        #   "path": pathlib.Path,
+        #   "format": FORMAT_DLGE | FORMAT_LOCR,
+        #   "json_content": original loaded JSON structure (for reference),
+        #   "en_strings": [  # List of extracted 'en' text data (editable state)
+        #     # DLGE format entry:
+        #     { "original_item_index": int, "original_line_number": int|None,
+        #       "original_string": str, # <--- BASELINE STRING, UPDATED ON SAVE
+        #       "segments": [ {"original_prefix": str|None, "text": str, "iid": str}, ... ] },
+        #     # LOCR format entry:
+        #     { "original_lang_block_index": int, "original_string_item_index": int, "original_line_number": int|None,
+        #       "string_hash": int|str|None,
+        #       "text": str, # <--- EDITABLE TEXT
+        #       "original_text": str, # <--- BASELINE STRING, UPDATED ON SAVE
+        #       "iid": str }
+        #   ]
+        # }
         self.file_data = []
+        # self.item_id_map maps treeview iid to data location:
+        # {
+        #   iid: { "file_index": int, "string_info_index": int, "segment_index": int|None } # segment_index is None for LOCR
+        # }
         self.item_id_map = {}
 
         # --- Editing State ---
         self.edit_entry = None
         self.edit_item_id = None
-        self._escape_pressed = False # Track Escape key for edit cancelling
+        self._escape_pressed = False
 
-        # --- Search State ---
+        # --- Undo/Redo State ---
+        self.undo_stack = deque(maxlen=100) # Store up to 100 actions
+        self.redo_stack = deque(maxlen=100)
+
+        # --- Search & Replace State ---
         self.search_term = tk.StringVar()
+        self.replace_term = tk.StringVar()
         self.search_results = []
         self.current_search_index = -1
+        self._last_search_was_findall = False # Track if the last search was Find All
 
         # --- Theme State ---
-        self.current_theme = tk.StringVar(value="Red/Dark") # Default theme
+        self.current_theme = tk.StringVar(value="Red/Dark") # Default theme, may be overridden by config
+
+        # --- Config ---
+        self.config_parser = configparser.ConfigParser()
+        self.config_file_path = pathlib.Path(CONFIG_FILE_NAME)
+        self._load_config() # Load settings early, including geometry, folders, theme, search terms
 
         # --- Menu Bar ---
         self.menu_bar = Menu(root)
@@ -147,32 +151,39 @@ class JsonEditorApp:
         self.file_menu = Menu(self.menu_bar, tearoff=0)
         self.menu_bar.add_cascade(label="File", menu=self.file_menu)
         self.file_menu.add_command(label="Select Input Folder...", command=self.select_input_folder)
+        self.file_menu.add_command(label="Open Input Folder Location", command=self._open_input_folder_location, state=tk.DISABLED) # Initial state updated later
         self.file_menu.add_command(label="Select Output Folder...", command=self.select_output_folder)
+        self.file_menu.add_command(label="Open Output Folder Location", command=self._open_output_folder_location, state=tk.DISABLED) # Initial state updated later
         self.file_menu.add_separator()
-        # Add Save command, state managed by _update_save_state using the label
-        # The accelerator triggers the command *if* state is NORMAL
+        self.file_menu.add_command(label="Export Text...", command=self._export_dialogue, state=tk.DISABLED)
+        self.file_menu.add_command(label="Import Text...", command=self._import_dialogue, state=tk.DISABLED)
+        self.file_menu.add_separator()
         self.file_menu.add_command(label="Save All Changes", command=self.save_all_files, state=tk.DISABLED, accelerator=self._get_accelerator("S"))
         self.file_menu.add_separator()
-        self.file_menu.add_command(label="Exit", command=self.root.quit)
+        self.file_menu.add_command(label="Exit", command=self._on_closing) # Use closing handler
 
         # Edit Menu
         self.edit_menu = Menu(self.menu_bar, tearoff=0)
         self.menu_bar.add_cascade(label="Edit", menu=self.edit_menu)
+        self.edit_menu.add_command(label="Undo", command=self._undo_action, state=tk.DISABLED, accelerator=self._get_accelerator("Z"))
+        self.edit_menu.add_command(label="Redo", command=self._redo_action, state=tk.DISABLED, accelerator=self._get_redo_accelerator())
+        self.edit_menu.add_separator()
         self.edit_menu.add_command(label="Cut", command=self._cut_selection, accelerator=self._get_accelerator("X"))
         self.edit_menu.add_command(label="Copy", command=self._copy_selection, accelerator=self._get_accelerator("C"))
         self.edit_menu.add_command(label="Paste", command=self._paste_selection, accelerator=self._get_accelerator("V"))
         self.edit_menu.add_separator()
-        self.edit_menu.add_command(label="Find", command=self._focus_search, accelerator=self._get_accelerator("F"))
-
+        self.edit_menu.add_command(label="Find / Focus Search", command=self._focus_search, accelerator=self._get_accelerator("F"))
+        self.edit_menu.add_command(label="Find All", command=self._find_all, accelerator="Shift+"+self._get_accelerator("F"))
+        self.edit_menu.add_command(label="Find Next", command=self._find_next, accelerator=self._get_accelerator("G")) # Or F3
+        self.edit_menu.add_command(label="Find Previous", command=self._find_previous, accelerator="Shift+"+self._get_accelerator("G")) # Or Shift+F3
 
         # View Menu (for Themes)
         self.view_menu = Menu(self.menu_bar, tearoff=0)
         self.menu_bar.add_cascade(label="View", menu=self.view_menu)
         self.theme_menu = Menu(self.view_menu, tearoff=0)
         self.view_menu.add_cascade(label="Theme", menu=self.theme_menu)
-        self.theme_menu.add_radiobutton(label="Light", variable=self.current_theme, value="Light", command=self._apply_theme)
-        self.theme_menu.add_radiobutton(label="Dark", variable=self.current_theme, value="Dark", command=self._apply_theme)
-        self.theme_menu.add_radiobutton(label="Red/Dark", variable=self.current_theme, value="Red/Dark", command=self._apply_theme)
+        for theme_name in THEMES:
+             self.theme_menu.add_radiobutton(label=theme_name, variable=self.current_theme, value=theme_name, command=self._apply_theme_and_save_config)
 
         # Help Menu
         self.help_menu = Menu(self.menu_bar, tearoff=0)
@@ -180,58 +191,84 @@ class JsonEditorApp:
         self.help_menu.add_command(label="Instructions", command=self._show_help)
         self.help_menu.add_command(label="About", command=self._show_about)
 
-
         # --- UI Elements ---
         # Frame for folder selection
         self.folder_frame = ttk.Frame(root, padding="10")
-        self.folder_frame.pack(fill=tk.X)
+        self.folder_frame.pack(fill=tk.X, side=tk.TOP) # Ensure packed at top
 
-        ttk.Button(self.folder_frame, text="Select Input Folder", command=self.select_input_folder).pack(side=tk.LEFT, padx=5)
-        self.input_entry = ttk.Entry(self.folder_frame, textvariable=self.input_folder, width=40, state='readonly')
+        # Input Folder Section
+        ttk.Button(self.folder_frame, text="Select Input Folder", command=self.select_input_folder).pack(side=tk.LEFT, padx=(0, 5))
+        self.input_entry = ttk.Entry(self.folder_frame, textvariable=self.input_folder, width=35, state='readonly')
         self.input_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        self.open_input_button = ttk.Button(self.folder_frame, text="Open", width=5, command=self._open_input_folder_location, state=tk.DISABLED)
+        self.open_input_button.pack(side=tk.LEFT, padx=(0, 15))
 
-        ttk.Button(self.folder_frame, text="Select Output Folder", command=self.select_output_folder).pack(side=tk.LEFT, padx=5)
-        self.output_entry = ttk.Entry(self.folder_frame, textvariable=self.output_folder, width=40, state='readonly')
+        # Output Folder Section
+        ttk.Button(self.folder_frame, text="Select Output Folder", command=self.select_output_folder).pack(side=tk.LEFT, padx=(0, 5))
+        self.output_entry = ttk.Entry(self.folder_frame, textvariable=self.output_folder, width=35, state='readonly')
         self.output_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        self.open_output_button = ttk.Button(self.folder_frame, text="Open", width=5, command=self._open_output_folder_location, state=tk.DISABLED)
+        self.open_output_button.pack(side=tk.LEFT, padx=0)
 
-        # --- Search Frame ---
-        self.search_frame = ttk.Frame(root, padding=(10, 0, 10, 5))
-        self.search_frame.pack(fill=tk.X)
+        # --- Search and Replace Frame ---
+        self.search_replace_frame = ttk.Frame(root, padding=(10, 5, 10, 5)) # Adjusted padding
+        self.search_replace_frame.pack(fill=tk.X, side=tk.TOP) # Ensure packed below folders
 
-        self.search_label = ttk.Label(self.search_frame, text="Search Text:")
+        self.search_label = ttk.Label(self.search_replace_frame, text="Search Text:")
         self.search_label.pack(side=tk.LEFT, padx=(0, 5))
-        self.search_entry = ttk.Entry(self.search_frame, textvariable=self.search_term)
+        self.search_entry = ttk.Entry(self.search_replace_frame, textvariable=self.search_term)
         self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        # Bindings for search entry
         self.search_entry.bind("<Return>", self._perform_search)
         self.search_entry.bind("<KP_Enter>", self._perform_search)
         self.search_entry.bind("<KeyRelease>", self._check_clear_search_on_empty)
+        self.search_entry.bind("<Button-3>", self._show_entry_context_menu)
 
-        self.find_button = ttk.Button(self.search_frame, text="Find", command=self._perform_search)
+        self.find_button = ttk.Button(self.search_replace_frame, text="Find", command=self._perform_search)
         self.find_button.pack(side=tk.LEFT, padx=5)
-        self.next_button = ttk.Button(self.search_frame, text="Next", command=self._find_next)
+        self.find_all_button = ttk.Button(self.search_replace_frame, text="Find All", command=self._find_all)
+        self.find_all_button.pack(side=tk.LEFT, padx=5)
+        self.next_button = ttk.Button(self.search_replace_frame, text="Next", command=self._find_next, state=tk.DISABLED)
         self.next_button.pack(side=tk.LEFT, padx=5)
-        self.prev_button = ttk.Button(self.search_frame, text="Previous", command=self._find_previous)
+        self.prev_button = ttk.Button(self.search_replace_frame, text="Previous", command=self._find_previous, state=tk.DISABLED)
         self.prev_button.pack(side=tk.LEFT, padx=5)
 
-        # --- Treeview Frame ---
-        self.tree_frame = ttk.Frame(root, padding="10")
-        self.tree_frame.pack(fill=tk.BOTH, expand=True)
+        self.replace_label = ttk.Label(self.search_replace_frame, text="Replace with:")
+        self.replace_label.pack(side=tk.LEFT, padx=(10, 5))
+        self.replace_entry = ttk.Entry(self.search_replace_frame, textvariable=self.replace_term)
+        self.replace_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        self.replace_entry.bind("<Button-3>", self._show_entry_context_menu)
 
-        # Define Columns
-        columns = (COL_LINE, COL_TIMECODE, DIALOGUE_COLUMN_ID)
+        self.replace_button = ttk.Button(self.search_replace_frame, text="Replace", command=self._replace_current, state=tk.DISABLED)
+        self.replace_button.pack(side=tk.LEFT, padx=5)
+        self.replace_all_button = ttk.Button(self.search_replace_frame, text="Replace All", command=self._replace_all, state=tk.DISABLED)
+        self.replace_all_button.pack(side=tk.LEFT, padx=5)
+
+        # --- Status Bar --- (Packed at the bottom)
+        self.status_frame = ttk.Frame(root, padding=(10, 5, 10, 10)) # Adjusted padding
+        self.status_frame.pack(fill=tk.X, side=tk.BOTTOM)
+
+        self.status_label = ttk.Label(self.status_frame, text="Status: Initializing...")
+        self.status_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+
+        self.save_button = ttk.Button(self.status_frame, text="Save All Changes", command=self.save_all_files, state=tk.DISABLED)
+        self.save_button.pack(side=tk.RIGHT, padx=5)
+
+        # --- Treeview Frame --- (Packed last, takes remaining space)
+        self.tree_frame = ttk.Frame(root, padding=(10, 0, 10, 0)) # Adjusted padding
+        self.tree_frame.pack(fill=tk.BOTH, expand=True, side=tk.TOP)
+
+        columns = (COL_LINE, COL_ID, DIALOGUE_COLUMN_ID) # Use constants
         self.tree = ttk.Treeview(self.tree_frame, columns=columns, show="headings")
 
-        # Headings
-        self.tree.heading(COL_LINE, text="Line #")
-        self.tree.heading(COL_TIMECODE, text="Timecode")
-        self.tree.heading(DIALOGUE_COLUMN_ID, text="Text (Double-click  to edit, header to open file)")
+        self.tree.heading(COL_LINE, text="Line / ID") # Updated Heading
+        self.tree.heading(COL_ID, text="Timecode / Hash") # Updated Heading
+        self.tree.heading(DIALOGUE_COLUMN_ID, text="Text (Double-click to edit, header to open file)")
 
-        # Column Configuration
-        self.tree.column(COL_LINE, anchor=tk.E, width=60, stretch=False)
-        self.tree.column(COL_TIMECODE, anchor=tk.W, width=150, stretch=False)
-        self.tree.column(DIALOGUE_COLUMN_ID, anchor=tk.W, width=700) # Make main column resizable
+        self.tree.column(COL_LINE, anchor=tk.E, width=120, stretch=False) # Wider for potential hash
+        self.tree.column(COL_ID, anchor=tk.W, width=150, stretch=False)
+        self.tree.column(DIALOGUE_COLUMN_ID, anchor=tk.W, width=600) # Adjusted width
 
-        # Scrollbars
         self.tree_scrollbar_y = ttk.Scrollbar(self.tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
         self.tree_scrollbar_x = ttk.Scrollbar(self.tree_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
         self.tree.configure(yscrollcommand=self.tree_scrollbar_y.set, xscrollcommand=self.tree_scrollbar_x.set)
@@ -240,264 +277,632 @@ class JsonEditorApp:
         self.tree_scrollbar_x.pack(side=tk.BOTTOM, fill=tk.X)
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Tag Configuration (Initial setup, colors applied by theme)
+        # Tag configuration (fonts, colors applied via theme later)
         try:
-            # Try setting the font for the tag
-            header_font = font.Font(family="Courier New", size=10, weight="bold")
+            # Use a standard, widely available font for the header
+            header_font = font.nametofont("TkDefaultFont").copy()
+            header_font.configure(weight="bold")
             self.tree.tag_configure(FILE_HEADER_TAG, font=header_font)
-        except tk.TclError:
-            # Fallback if font object isn't supported directly in tag_configure
-            # (Might happen on older Tk versions or specific platforms)
-            print("Warning: Font object may not be directly supported in tree tag_configure. Using default font.")
-            self.tree.tag_configure(FILE_HEADER_TAG, font= ('Courier New', 10, 'bold'))
         except Exception as e:
-             print(f"Warning: Could not set header font: {e}")
-             self.tree.tag_configure(FILE_HEADER_TAG) # Configure tag without font if error
+             print(f"Warning: Could not set header font reliably: {e}")
+             self.tree.tag_configure(FILE_HEADER_TAG) # Apply tag anyway for color
 
-        self.tree.tag_configure('protected', foreground='#555555') # Less important, might not need theme change
-        self.tree.tag_configure(SEPARATOR_TAG)
+        self.tree.tag_configure('protected') # Colors set by theme
+        self.tree.tag_configure(SEPARATOR_TAG) # Colors set by theme
         self.tree.tag_configure(SEARCH_HIGHLIGHT_TAG) # Colors set by theme
 
-        # --- Context Menu ---
-        self.context_menu = Menu(self.tree, tearoff=0)
-        self.context_menu.add_command(label="Copy", command=self._copy_selection, accelerator=self._get_accelerator("C"))
-        self.context_menu.add_command(label="Cut", command=self._cut_selection, accelerator=self._get_accelerator("X"))
-        self.context_menu.add_command(label="Paste", command=self._paste_selection, accelerator=self._get_accelerator("V"))
+        # --- Context Menu (Treeview) ---
+        self.tree_context_menu = Menu(self.tree, tearoff=0)
+        self.tree_context_menu.add_command(label="Copy", command=self._copy_selection, accelerator=self._get_accelerator("C"))
+        self.tree_context_menu.add_command(label="Cut", command=self._cut_selection, accelerator=self._get_accelerator("X"))
+        self.tree_context_menu.add_command(label="Paste", command=self._paste_selection, accelerator=self._get_accelerator("V"))
+
+        # --- Context Menu (Entries) ---
+        self.entry_context_menu = Menu(root, tearoff=0)
+        self.entry_context_menu.add_command(label="Undo", command=self._undo_action, accelerator=self._get_accelerator("Z"))
+        self.entry_context_menu.add_command(label="Redo", command=self._redo_action, accelerator=self._get_redo_accelerator())
+        self.entry_context_menu.add_separator()
+        self.entry_context_menu.add_command(label="Cut", command=lambda: self._entry_action(self.root.focus_get(), 'Cut'))
+        self.entry_context_menu.add_command(label="Copy", command=lambda: self._entry_action(self.root.focus_get(), 'Copy'))
+        self.entry_context_menu.add_command(label="Paste", command=lambda: self._entry_action(self.root.focus_get(), 'Paste'))
 
         # --- Bind Treeview Events ---
         self.tree.bind("<Double-1>", self._on_tree_double_click)
         self.tree.bind("<Button-1>", self._on_tree_single_click_or_clear_edit)
-        self.tree.bind("<Button-3>", self._show_context_menu) # Right-click
+        self.tree.bind("<Button-3>", self._show_tree_context_menu) # Right-click for Treeview context
 
         # --- Bind Keyboard Shortcuts (Specific & Global) ---
         modifier = self._get_modifier_key()
-        # Bind basic edit shortcuts directly to the tree (for when it has focus)
+        # Tree specific clipboard (Ensure focus is on tree for these)
         self.tree.bind(f"<{modifier}-c>", self._copy_selection)
         self.tree.bind(f"<{modifier}-x>", self._cut_selection)
         self.tree.bind(f"<{modifier}-v>", self._paste_selection)
+        # Global actions (use bind_all)
+        self.root.bind_all(f"<{modifier}-s>", lambda e: self.save_all_files()) # Save All
+        self.root.bind_all(f"<{modifier}-f>", self._focus_search) # Focus Search (pass event)
+        self.root.bind_all(f"<Shift-{modifier}-F>", self._find_all) # Find All (pass event)
+        self.root.bind_all(f"<{modifier}-g>", self._find_next) # Find Next (pass event)
+        self.root.bind_all(f"<Shift-{modifier}-G>", self._find_previous) # Find Previous (pass event)
+        self.root.bind_all(f"<{modifier}-z>", self._undo_action) # Undo (pass event)
+        self.root.bind_all(self._get_redo_binding(), self._redo_action) # Redo (pass event)
 
-        # Bind Find globally (more likely to be used anytime)
-        self.root.bind_all(f"<{modifier}-f>", lambda e: self._focus_search()) # Find shortcut
 
-        # Note: Ctrl+S/Cmd+S is handled by the menu accelerator directly. No need for bind_all.
+        # --- Configure Resizing --- (Focus on TreeView and Entries)
+        self.root.columnconfigure(0, weight=1) # Allow main column to expand
+        self.root.rowconfigure(2, weight=1) # Allow Treeview Frame row to expand (0:folder, 1:search, 2:tree, 3:status)
 
-        # --- Status Bar ---
-        self.status_frame = ttk.Frame(root, padding="10")
-        self.status_frame.pack(fill=tk.X)
-
-        self.status_label = ttk.Label(self.status_frame, text="Status: Select input folder.")
-        self.status_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-
-        self.save_button = ttk.Button(self.status_frame, text="Save All Changes", command=self.save_all_files, state=tk.DISABLED)
-        self.save_button.pack(side=tk.RIGHT, padx=5)
-
-        # Configure resizing
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(3, weight=1) # Treeview frame row
+        # Adjust column weights in folder_frame for entries
         self.folder_frame.columnconfigure(1, weight=1) # Input entry
-        self.folder_frame.columnconfigure(3, weight=1) # Output entry
-        self.search_frame.columnconfigure(1, weight=1) # Search entry
+        self.folder_frame.columnconfigure(4, weight=1) # Output entry
+
+        # Adjust weights in search_replace_frame for entries
+        self.search_replace_frame.columnconfigure(1, weight=3) # Search entry
+        self.search_replace_frame.columnconfigure(7, weight=3) # Replace entry
+
+        # Tree frame resizing
         self.tree_frame.columnconfigure(0, weight=1) # Treeview widget itself
-        self.tree_frame.rowconfigure(0, weight=1)
+        self.tree_frame.rowconfigure(0, weight=1) # Treeview widget itself
+
+        # Status frame resizing (Label takes space)
         self.status_frame.columnconfigure(0, weight=1) # Status label
 
-        # --- Apply Initial Theme ---
-        self._apply_theme() # Apply default theme (Light)
+        # --- Final Initialization Steps ---
+        self._apply_theme() # Apply theme loaded from config (or default)
+        self._update_folder_open_button_states() # Update based on loaded paths
+        self._update_search_replace_button_states() # Update based on loaded data (none yet)
+        self._update_undo_redo_state() # Should be disabled initially
+        self._update_import_export_state() # Should be disabled initially
+        self._update_save_state() # Initial save state check
 
+        # Set status after loading config and applying theme
+        if not self.input_folder.get():
+             self.status_label.config(text="Status: Select input folder.")
+        else:
+             # If input folder loaded from config, try loading files
+             self.status_label.config(text="Status: Input folder loaded from config. Loading files...")
+             self.root.after(100, self.load_json_files) # Load files shortly after UI is up
+
+        # --- Set Closing Protocol ---
+        self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
+
+    # --- Config Saving/Loading ---
+    def _load_config(self):
+        """Loads settings from the config file."""
+        try:
+            if self.config_file_path.is_file():
+                self.config_parser.read(self.config_file_path, encoding='utf-8') # Specify encoding
+                if 'Settings' in self.config_parser:
+                    settings = self.config_parser['Settings']
+                    self.input_folder.set(settings.get('InputFolder', ''))
+                    self.output_folder.set(settings.get('OutputFolder', ''))
+                    # Theme
+                    loaded_theme = settings.get('Theme', 'Red/Dark')
+                    self.current_theme.set(loaded_theme if loaded_theme in THEMES else 'Red/Dark')
+                    # Search/Replace Terms
+                    self.search_term.set(settings.get('SearchTerm', ''))
+                    self.replace_term.set(settings.get('ReplaceTerm', ''))
+                    # Window Geometry
+                    geometry = settings.get('WindowGeometry', None)
+                    if geometry:
+                        try:
+                            # Basic validation for geometry string format (e.g., "1200x800+100+100")
+                            if re.fullmatch(r"\d+x\d+\+\d+\+\d+", geometry):
+                                self.root.geometry(geometry)
+                            else:
+                                print(f"Warning: Invalid geometry string in config: {geometry}")
+                        except tk.TclError as e:
+                            print(f"Warning: Could not apply geometry '{geometry}' from config: {e}")
+
+                    print(f"Loaded config from {self.config_file_path}")
+                else:
+                    print(f"Config file {self.config_file_path} found but missing [Settings] section.")
+            else:
+                print(f"Config file {self.config_file_path} not found. Using defaults.")
+
+        except (configparser.Error, FileNotFoundError, Exception) as e: # Catch more specific errors
+             print(f"Error reading config file {self.config_file_path}: {e}")
+
+    def _save_config(self):
+        """Saves current settings to the config file."""
+        try:
+            if not self.config_parser.has_section('Settings'):
+                self.config_parser.add_section('Settings')
+
+            settings_data = {
+                'InputFolder': self.input_folder.get(),
+                'OutputFolder': self.output_folder.get(),
+                'Theme': self.current_theme.get(),
+                'SearchTerm': self.search_term.get(),
+                'ReplaceTerm': self.replace_term.get(),
+                'WindowGeometry': self.root.winfo_geometry()
+            }
+            for key, value in settings_data.items():
+                self.config_parser.set('Settings', key, value)
+
+            with open(self.config_file_path, 'w', encoding='utf-8') as configfile: # Specify encoding
+                self.config_parser.write(configfile)
+            # print(f"Saved config to {self.config_file_path}") # Optional: uncomment for debug
+        except (IOError, configparser.Error, Exception) as e: # Catch more specific errors
+            print(f"Error writing config file {self.config_file_path}: {e}")
+            # Optionally show a non-blocking warning
+            # messagebox.showwarning("Config Save Error", f"Could not save settings to {self.config_file_path}:\n{e}", parent=self.root)
+
+
+    def _on_closing(self):
+        """Handles application closing: saves config and quits."""
+        print("Closing application and saving config...")
+        self._save_config()
+        self.root.destroy()
 
     # --- Themeing ---
+    def _apply_theme_and_save_config(self):
+        """Applies the theme and saves the config immediately."""
+        self._apply_theme()
+        self._save_config() # Save theme change immediately
+
     def _apply_theme(self):
         theme_name = self.current_theme.get()
-        colors = THEMES.get(theme_name, THEMES["Light"]) # Fallback to Light
+        colors = THEMES.get(theme_name, THEMES["Red/Dark"]) # Fallback
 
-        # Configure root window background
         self.root.config(bg=colors["bg"])
 
-        # Configure ttk styles
-        self.style.configure('.', background=colors["bg"], foreground=colors["fg"])
-        self.style.configure('TButton', background=colors["button_bg"], foreground=colors["button_fg"], padding=5)
-        self.style.map('TButton', background=[('active', colors["header_bg"]), ('disabled', colors["button_bg"])], foreground=[('disabled', colors["disabled_fg"])]) # Handle disabled state
-        self.style.configure('TEntry', fieldbackground=colors["entry_bg"], foreground=colors["entry_fg"], insertcolor=colors["fg"]) # Set cursor color
-        self.style.map('TEntry', foreground=[('readonly', colors["disabled_fg"])])
-        self.style.configure('TLabel', background=colors["bg"], foreground=colors["fg"])
-        self.style.configure('TFrame', background=colors["bg"])
+        # --- Configure ttk styles ---
+        self.style.configure('.',
+                             background=colors["bg"],
+                             foreground=colors["fg"],
+                             fieldbackground=colors["entry_bg"], # Default field background
+                             insertcolor=colors["fg"]) # Default cursor color
+
+        # Button Style
+        self.style.configure('TButton',
+                             background=colors["button_bg"],
+                             foreground=colors["button_fg"],
+                             padding=5,
+                             relief=tk.FLAT,
+                             borderwidth=1)
+        self.style.map('TButton',
+                       background=[('active', colors["header_bg"]),
+                                   ('disabled', colors["button_bg"])],
+                       foreground=[('disabled', colors["disabled_fg"])],
+                       relief=[('pressed', tk.SUNKEN), ('!pressed', tk.FLAT)])
+
+        # Entry Style (includes Treeview inline editor via 'Treeview.TEntry')
+        self.style.configure('TEntry',
+                             fieldbackground=colors["entry_bg"],
+                             foreground=colors["entry_fg"],
+                             insertcolor=colors["fg"],
+                             borderwidth=1,
+                             relief=tk.SUNKEN)
+        self.style.map('TEntry',
+                       foreground=[('readonly', colors["disabled_fg"])],
+                       fieldbackground=[('readonly', colors["bg"])])
+
+        # Treeview Style
         self.style.configure('Treeview',
                              background=colors["tree_bg"],
-                             fieldbackground=colors["tree_bg"], # Important for Treeview background
-                             foreground=colors["tree_fg"])
+                             fieldbackground=colors["tree_bg"],
+                             foreground=colors["tree_fg"],
+                             borderwidth=0,
+                             relief=tk.FLAT)
         self.style.map('Treeview',
                        background=[('selected', colors["tree_selected_bg"])],
                        foreground=[('selected', colors["tree_selected_fg"])])
-        self.style.configure('Treeview.Heading', background=colors["button_bg"], foreground=colors["button_fg"], font=('TkDefaultFont', 10, 'bold'))
-        self.style.map('Treeview.Heading', background=[('active', colors["header_bg"])])
 
-        # Configure specific widgets that might not fully follow style
+        # Treeview Heading Style
+        self.style.configure('Treeview.Heading',
+                             background=colors["button_bg"],
+                             foreground=colors["button_fg"],
+                             font=('TkDefaultFont', 10, 'bold'),
+                             relief=tk.RAISED,
+                             padding=(5, 3))
+        self.style.map('Treeview.Heading',
+                       background=[('active', colors["header_bg"])])
+
+        # Label Style
+        self.style.configure('TLabel', background=colors["bg"], foreground=colors["fg"])
+
+        # Frame Style
+        self.style.configure('TFrame', background=colors["bg"])
+
+        # Scrollbar Style
+        if theme_name != "Light":
+            self.style.configure('Vertical.TScrollbar',
+                                 background=colors["button_bg"], troughcolor=colors["bg"],
+                                 arrowcolor=colors["fg"], bordercolor=colors["bg"], relief=tk.FLAT)
+            self.style.map('Vertical.TScrollbar', background=[('active', colors["header_bg"])])
+            self.style.configure('Horizontal.TScrollbar',
+                                 background=colors["button_bg"], troughcolor=colors["bg"],
+                                 arrowcolor=colors["fg"], bordercolor=colors["bg"], relief=tk.FLAT)
+            self.style.map('Horizontal.TScrollbar', background=[('active', colors["header_bg"])])
+        else:
+            # Reset scrollbar style for light theme
+            self.style.configure('Vertical.TScrollbar', background='', troughcolor='', arrowcolor='', bordercolor='', relief='')
+            self.style.map('Vertical.TScrollbar', background=[])
+            self.style.configure('Horizontal.TScrollbar', background='', troughcolor='', arrowcolor='', bordercolor='', relief='')
+            self.style.map('Horizontal.TScrollbar', background=[])
+
+
+        # --- Apply to specific non-ttk widgets or tags ---
         self.status_label.config(background=colors["status_bg"], foreground=colors["status_fg"])
-        # Readonly entries often inherit fieldbackground, but fg might need explicit setting
-        self.input_entry.config(foreground=colors["disabled_fg"])
-        self.output_entry.config(foreground=colors["disabled_fg"])
-
-        # Frames backgrounds
+        self.input_entry.config(style='TEntry')
+        self.output_entry.config(style='TEntry')
         self.folder_frame.config(style='TFrame')
-        self.search_frame.config(style='TFrame')
+        self.search_replace_frame.config(style='TFrame')
         self.tree_frame.config(style='TFrame')
         self.status_frame.config(style='TFrame')
 
-        # Configure Treeview Tags (Important!)
+        # Treeview Tags
         self.tree.tag_configure(FILE_HEADER_TAG, background=colors["header_bg"], foreground=colors["header_fg"])
         self.tree.tag_configure(SEPARATOR_TAG, background=colors["separator_bg"])
-        # Ensure protected tag also follows theme foreground
-        self.tree.tag_configure('protected', foreground=colors.get("disabled_fg", "#555555"))
+        self.tree.tag_configure('protected', foreground=colors.get("disabled_fg", "#A0A0A0"))
         self.tree.tag_configure(SEARCH_HIGHLIGHT_TAG, background=colors["search_bg"], foreground=colors["search_fg"])
 
-        # Configure Menu appearance (basic theming)
-        menu_elements = [self.menu_bar, self.file_menu, self.edit_menu, self.view_menu, self.theme_menu, self.help_menu, self.context_menu]
+        # --- Menu appearance ---
+        menu_elements = [self.menu_bar, self.file_menu, self.edit_menu, self.view_menu, self.theme_menu, self.help_menu, self.tree_context_menu, self.entry_context_menu]
         for menu in menu_elements:
              try:
-                 menu.config(bg=colors["menu_bg"], fg=colors["menu_fg"],
-                             activebackground=colors["menu_active_bg"],
-                             activeforeground=colors["menu_active_fg"],
-                             activeborderwidth=0,
-                             bd=0) # Remove borders for a flatter look
-             except tk.TclError as e:
-                 print(f"Warning: Could not configure menu theme properties: {e}") # May fail on some platforms/Tk versions
+                 is_context = menu in [self.entry_context_menu, self.tree_context_menu]
+                 menu_bg = colors.get("entry_context_bg" if is_context else "menu_bg", colors["menu_bg"])
+                 menu_fg = colors.get("entry_context_fg" if is_context else "menu_fg", colors["menu_fg"])
+                 active_bg = colors.get("entry_context_active_bg" if is_context else "menu_active_bg", colors["menu_active_bg"])
+                 active_fg = colors.get("entry_context_active_fg" if is_context else "menu_active_fg", colors["menu_active_fg"])
 
-        # Force update of styles on existing widgets if needed (often automatic)
+                 menu.config(bg=menu_bg, fg=menu_fg,
+                             activebackground=active_bg,
+                             activeforeground=active_fg,
+                             activeborderwidth=0, bd=0,
+                             relief=tk.FLAT)
+             except tk.TclError as e:
+                 print(f"Warning: Could not configure some menu theme properties: {e}")
+
+        # Force update of the UI
         self.root.update_idletasks()
 
 
     # --- OS Specific Key Bindings ---
     def _get_modifier_key(self):
-        if platform.system() == "Darwin": return "Command"
-        else: return "Control"
+        return "Command" if platform.system() == "Darwin" else "Control"
 
     def _get_accelerator(self, key):
         modifier = self._get_modifier_key()
         mod_symbol = "Cmd" if modifier == "Command" else "Ctrl"
         return f"{mod_symbol}+{key.upper()}"
 
+    def _get_redo_accelerator(self):
+        modifier = self._get_modifier_key()
+        mod_symbol = "Cmd" if modifier == "Command" else "Ctrl"
+        return f"Shift+{mod_symbol}+Z" if platform.system() == "Darwin" else f"{mod_symbol}+Y"
+
+    def _get_redo_binding(self):
+        modifier = self._get_modifier_key()
+        return f"<Shift-{modifier}-z>" if platform.system() == "Darwin" else f"<{modifier}-y>"
+
     # --- Folder Selection & State ---
     def select_input_folder(self):
-        folder = filedialog.askdirectory()
+        folder = filedialog.askdirectory(initialdir=self.input_folder.get() or pathlib.Path.home()) # Start at home if unset
         if folder:
-            if self.output_folder.get() and pathlib.Path(folder).resolve() == pathlib.Path(self.output_folder.get()).resolve():
-                 messagebox.showwarning("Warning", "Input folder cannot be the same as the output folder.")
-                 return
-            self.input_folder.set(folder)
+            folder_path = pathlib.Path(folder).resolve()
+            output_path_str = self.output_folder.get()
+            if output_path_str:
+                 output_path = pathlib.Path(output_path_str).resolve()
+                 if folder_path == output_path:
+                     messagebox.showwarning("Warning", "Input folder cannot be the same as the output folder.", parent=self.root)
+                     return
+            self.input_folder.set(str(folder_path))
             self._clear_search()
             self.file_data = []
             self.item_id_map = {}
             self.tree.delete(*self.tree.get_children())
+            self._clear_undo_redo()
             self.load_json_files()
-            self._update_save_state() # Use unified state updater
+            self._update_folder_open_button_states()
+            self._save_config() # Save new folder path
 
     def select_output_folder(self):
-        folder = filedialog.askdirectory()
+        folder = filedialog.askdirectory(initialdir=self.output_folder.get() or self.input_folder.get() or pathlib.Path.home())
         if folder:
-            if self.input_folder.get() and pathlib.Path(folder).resolve() == pathlib.Path(self.input_folder.get()).resolve():
-                 messagebox.showwarning("Warning", "Output folder cannot be the same as the input folder.")
-                 return
-            self.output_folder.set(folder)
-            self._update_save_state() # Use unified state updater
+            folder_path = pathlib.Path(folder).resolve()
+            input_path_str = self.input_folder.get()
+            if input_path_str:
+                input_path = pathlib.Path(input_path_str).resolve()
+                if folder_path == input_path:
+                    messagebox.showwarning("Warning", "Output folder cannot be the same as the input folder.", parent=self.root)
+                    return
+            self.output_folder.set(str(folder_path))
+            self._update_save_state()
+            self._update_folder_open_button_states()
+            self._save_config() # Save new folder path
 
     def _update_save_state(self):
         """Updates the state of the Save button and Save menu item."""
-        if self.input_folder.get() and self.output_folder.get() and self.file_data:
-            new_state = tk.NORMAL
-        else:
-            new_state = tk.DISABLED
+        # Enable save only if both folders are set and there is data loaded
+        new_state = tk.NORMAL if self.input_folder.get() and self.output_folder.get() and self.file_data else tk.DISABLED
+        if hasattr(self, 'save_button'):
+             self.save_button.config(state=new_state)
+        if hasattr(self, 'file_menu'):
+            try:
+                save_index = self.file_menu.index("Save All Changes")
+                if save_index is not None and save_index != tk.NONE:
+                    self.file_menu.entryconfigure(save_index, state=new_state)
+            except (tk.TclError, AttributeError): pass # Ignore if menu not ready/found
 
-        self.save_button.config(state=new_state)
-        # Update the File menu item state using its LABEL
+
+    def _update_folder_open_button_states(self):
+        """Updates the state of the 'Open' buttons and corresponding menu items."""
+        input_path = self.input_folder.get()
+        output_path = self.output_folder.get()
+
+        # Check if paths are valid directories
+        input_state = tk.NORMAL if input_path and pathlib.Path(input_path).is_dir() else tk.DISABLED
+        output_state = tk.NORMAL if output_path and pathlib.Path(output_path).is_dir() else tk.DISABLED
+
+        # Update Buttons (check existence first)
+        if hasattr(self, 'open_input_button'):
+            self.open_input_button.config(state=input_state)
+        if hasattr(self, 'open_output_button'):
+            self.open_output_button.config(state=output_state)
+
+        # Update Menu Items (use try-except for robustness)
+        if hasattr(self, 'file_menu'):
+            try:
+                input_index = self.file_menu.index("Open Input Folder Location")
+                if input_index is not None and input_index != tk.NONE:
+                    self.file_menu.entryconfigure(input_index, state=input_state)
+                output_index = self.file_menu.index("Open Output Folder Location")
+                if output_index is not None and output_index != tk.NONE:
+                    self.file_menu.entryconfigure(output_index, state=output_state)
+            except (tk.TclError, AttributeError) as e:
+                 print(f"Warning: Could not update Open Folder menu item states: {e}")
+
+
+    def _update_import_export_state(self):
+        """Updates the state of the Import/Export menu items."""
+        new_state = tk.NORMAL if self.file_data and self.item_id_map else tk.DISABLED
+        if hasattr(self, 'file_menu'):
+            try:
+                export_index = self.file_menu.index("Export Text...")
+                if export_index is not None and export_index != tk.NONE:
+                    self.file_menu.entryconfigure(export_index, state=new_state)
+                import_index = self.file_menu.index("Import Text...")
+                if import_index is not None and import_index != tk.NONE:
+                     self.file_menu.entryconfigure(import_index, state=new_state)
+            except (tk.TclError, AttributeError):
+                 pass # Menu might not be fully initialized
+
+    # --- Open Folder Location Logic ---
+    def _open_folder_location(self, folder_path_str):
+        """Opens the specified folder path in the system's file explorer."""
+        if not folder_path_str:
+            messagebox.showwarning("Open Folder", "No folder path is selected.", parent=self.root)
+            return
+
+        folder_path = pathlib.Path(folder_path_str)
+
+        # Check if it's a file first for the header double-click case
+        is_file = folder_path.is_file()
+        target_path = folder_path.parent if is_file else folder_path # Get dir if it's a file
+
+        if not target_path.is_dir():
+            messagebox.showerror("Open Folder Error", f"The path is not a valid directory or file:\n{folder_path}", parent=self.root)
+            return
+
         try:
-            # Use the label which is more robust than index
-            self.file_menu.entryconfigure("Save All Changes", state=new_state)
+            print(f"Attempting to open: {folder_path}") # Open the original path (file or folder)
+            system = platform.system()
+            if system == "Windows":
+                os.startfile(folder_path)
+            elif system == "Darwin": # macOS
+                subprocess.run(['open', str(folder_path)], check=True)
+            else: # Linux and other Unix-like
+                subprocess.run(['xdg-open', str(folder_path)], check=True)
+        except FileNotFoundError:
+            cmd = 'open' if system == 'Darwin' else 'xdg-open' if system != 'Windows' else 'startfile mechanism'
+            messagebox.showerror("Open Folder Error", f"Could not find the command to open folders/files on this system ('{cmd}').", parent=self.root)
+        except subprocess.CalledProcessError as e:
+             messagebox.showerror("Open Folder Error", f"The command to open the item failed:\n{e}", parent=self.root)
+        except Exception as e:
+            print(f"Error opening item {folder_path}: {e}")
+            messagebox.showerror("Open Folder Error", f"An unexpected error occurred:\n{e}", parent=self.root)
+
+    def _open_input_folder_location(self):
+        """Command for the 'Open Input Folder' button/menu item."""
+        self._open_folder_location(self.input_folder.get())
+
+    def _open_output_folder_location(self):
+        """Command for the 'Open Output Folder' button/menu item."""
+        self._open_folder_location(self.output_folder.get())
+
+
+    # --- Centralized Update Logic (Handles Undo/Redo & Formats) ---
+    def _update_tree_and_data(self, iid, new_text, is_undo_redo=False):
+        """Updates the treeview and backend data for a given item IID.
+
+        Args:
+            iid: The Treeview item ID.
+            new_text: The new text value.
+            is_undo_redo: Flag to prevent logging undo/redo actions themselves.
+
+        Returns:
+            True if the update was successful, False otherwise.
+        """
+        # --- Pre-checks ---
+        if not self.tree.exists(iid):
+            print(f"Warning: Attempted to update non-existent item {iid}.")
+            return False
+        if iid not in self.item_id_map:
+            print(f"Error: Item {iid} exists in Treeview but not in item_id_map.")
+            messagebox.showerror("Internal Error", f"Data mapping missing for item {iid}.\nPlease reload the folder.", parent=self.root)
+            return False
+
+        current_tree_text = "" # Initialize
+        try:
+            current_tree_text = self.tree.set(iid, DIALOGUE_COLUMN_ID)
+
+            # Only proceed if text actually changed
+            if new_text == current_tree_text:
+                # print(f"Skipping update for {iid}, text unchanged.") # Debugging
+                return True # No change needed
+
+            # --- Get Data Location & Format ---
+            map_info = self.item_id_map[iid]
+            file_idx = map_info.get("file_index")
+            string_info_idx = map_info.get("string_info_index")
+            seg_idx = map_info.get("segment_index") # Will be None for LOCR
+
+            # Verify basic indices
+            if not (isinstance(file_idx, int) and isinstance(string_info_idx, int)):
+                 print(f"Error: Corrupt map info (base indices) for IID '{iid}' during update: {map_info}")
+                 messagebox.showerror("Internal Error", f"Could not save change for item {iid}.\nMap data indices invalid.", parent=self.root)
+                 return False
+
+            # Get file format and verify file data structure
+            if not (0 <= file_idx < len(self.file_data) and isinstance(self.file_data[file_idx], dict)):
+                 print(f"Error: Invalid file index {file_idx} for IID '{iid}'.")
+                 messagebox.showerror("Internal Error", "Data structure error (file index).", parent=self.root)
+                 return False
+            file_format = self.file_data[file_idx].get("format")
+            en_strings = self.file_data[file_idx].get("en_strings")
+
+            if not (file_format in [FORMAT_DLGE, FORMAT_LOCR] and isinstance(en_strings, list) and
+                    0 <= string_info_idx < len(en_strings) and isinstance(en_strings[string_info_idx], dict)):
+                print(f"Error: Data structure integrity path check failed (file/string_info level) for IID '{iid}'.")
+                messagebox.showerror("Internal Error", f"Could not save change for item {iid}.\nData structure inconsistent.", parent=self.root)
+                return False
+
+            string_data = en_strings[string_info_idx]
+
+            # --- Undo/Redo Handling ---
+            if not is_undo_redo:
+                # Store the *old* state before changing it
+                self.undo_stack.append({'iid': iid, 'old_value': current_tree_text, 'new_value': new_text})
+                self.redo_stack.clear() # Clear redo stack on new user action
+                self._update_undo_redo_state()
+
+            # --- Perform Updates (Format Specific) ---
+            data_updated = False
+            if file_format == FORMAT_DLGE:
+                if isinstance(seg_idx, int) and \
+                   isinstance(string_data.get("segments"), list) and \
+                   0 <= seg_idx < len(string_data["segments"]) and \
+                   isinstance(string_data["segments"][seg_idx], dict):
+                    # UPDATE the 'text' field of the specific segment
+                    string_data["segments"][seg_idx]["text"] = new_text
+                    data_updated = True
+                else:
+                    print(f"Error: Invalid segment index or structure for DLGE item {iid}.")
+                    messagebox.showerror("Internal Error", f"Data structure inconsistent (DLGE segment {iid}).", parent=self.root)
+
+            elif file_format == FORMAT_LOCR:
+                if "text" in string_data: # LOCR stores text directly in string_info
+                    # UPDATE the 'text' field directly
+                    string_data["text"] = new_text
+                    data_updated = True
+                else:
+                     print(f"Error: Missing 'text' key for LOCR item {iid}.")
+                     messagebox.showerror("Internal Error", f"Data structure inconsistent (LOCR text {iid}).", parent=self.root)
+
+            # --- Update Treeview (if data update succeeded) ---
+            if data_updated:
+                self.tree.set(iid, DIALOGUE_COLUMN_ID, new_text)
+                # print(f"Backend/Treeview updated for {iid} ({file_format}) to '{new_text}'") # Debugging
+                return True
+            else:
+                # Data update failed, revert undo stack change if made
+                if not is_undo_redo and self.undo_stack and self.undo_stack[-1]['iid'] == iid:
+                    self.undo_stack.pop()
+                    self._update_undo_redo_state()
+                return False # Update failed
+
+        except KeyError as e:
+             print(f"Error updating item {iid}: Missing key {e} in data structure.")
+             messagebox.showerror("Internal Error", f"Data structure error updating item {iid}: Missing key {e}", parent=self.root)
+             if not is_undo_redo and self.undo_stack and self.undo_stack[-1]['iid'] == iid: self.undo_stack.pop(); self._update_undo_redo_state()
+             if current_tree_text and self.tree.exists(iid): self.tree.set(iid, DIALOGUE_COLUMN_ID, current_tree_text) # Revert UI if possible
+             return False
+        except IndexError as e:
+            print(f"Error updating item {iid}: Index out of bounds {e}.")
+            messagebox.showerror("Internal Error", f"Data structure error updating item {iid}: Index out of bounds.", parent=self.root)
+            if not is_undo_redo and self.undo_stack and self.undo_stack[-1]['iid'] == iid: self.undo_stack.pop(); self._update_undo_redo_state()
+            if current_tree_text and self.tree.exists(iid): self.tree.set(iid, DIALOGUE_COLUMN_ID, current_tree_text)
+            return False
         except tk.TclError as e:
-             print(f"Warning: Could not update Save menu item state ('Save All Changes'): {e}")
-        except AttributeError:
-             # This might happen if called very early before menus are fully built
-             print("Warning: File menu not fully initialized when trying to update save state.")
+             print(f"Error updating Treeview item {iid}: {e}")
+             messagebox.showerror("UI Error", f"Failed to update display for item {iid}:\n{e}", parent=self.root)
+             # Assume data update failed if UI failed right after
+             if not is_undo_redo and self.undo_stack and self.undo_stack[-1]['iid'] == iid: self.undo_stack.pop(); self._update_undo_redo_state()
+             return False
+        except Exception as e:
+             print(f"Unexpected error updating item {iid}: {type(e).__name__}: {e}")
+             traceback.print_exc() # Print full traceback for unexpected errors
+             messagebox.showerror("Unexpected Error", f"An unexpected error occurred updating item {iid}:\n{e}", parent=self.root)
+             if not is_undo_redo and self.undo_stack and self.undo_stack[-1]['iid'] == iid: self.undo_stack.pop(); self._update_undo_redo_state()
+             if current_tree_text and self.tree.exists(iid): self.tree.set(iid, DIALOGUE_COLUMN_ID, current_tree_text)
+             return False
 
 
     # --- File Opening Logic ---
     def _open_file_from_header(self, header_iid):
-        # (Code identical to the original, no changes needed here)
+        """Opens the original JSON file associated with a header row."""
         try:
             if not header_iid.startswith("header_"):
-                print(f"Warning: Unexpected header IID format: {header_iid}")
+                print(f"Warning: Unexpected header IID format for file open: {header_iid}")
                 return
 
             file_index_str = header_iid.split('_')[-1]
             file_index = int(file_index_str)
 
             if not (0 <= file_index < len(self.file_data)):
-                print(f"Error: File index {file_index} derived from IID {header_iid} is out of bounds.")
-                messagebox.showerror("Error", "Could not open file: Internal data inconsistency.")
+                print(f"Error: File index {file_index} (from IID {header_iid}) is out of bounds for self.file_data (len {len(self.file_data)}).")
+                messagebox.showerror("Error", "Cannot open file: Internal data index is invalid.", parent=self.root)
                 return
 
-            file_path = self.file_data[file_index]['path']
+            # Get the path stored in our data structure
+            file_path = self.file_data[file_index].get('path')
 
-            if file_path and file_path.is_file():
-                try:
-                    if platform.system() == "Windows":
-                        os.startfile(file_path)
-                    elif platform.system() == "Darwin": # macOS
-                        # Use subprocess for better error handling/backgrounding
-                        import subprocess
-                        subprocess.run(['open', file_path], check=False)
-                        # os.system(f'open "{file_path}"') # Previous method
-                    else: # Linux and other Unix-like
-                        import subprocess
-                        subprocess.run(['xdg-open', file_path], check=False)
-                        # os.system(f'xdg-open "{file_path}"') # Previous method
-                    print(f"Attempting to open: {file_path}")
-                except Exception as e:
-                    print(f"Error opening file {file_path} using system handler: {e}")
-                    try:
-                        file_uri = file_path.as_uri()
-                        print(f"Fallback: Attempting to open with webbrowser: {file_uri}")
-                        webbrowser.open(file_uri)
-                    except Exception as e_web:
-                        print(f"Error opening file {file_path} with webbrowser fallback: {e_web}")
-                        messagebox.showerror("File Open Error", f"Could not open file:\n{file_path}\n\nError: {e_web} (after primary error: {e})")
-            else:
-                print(f"Error: Original file path not found or is not a file for index {file_index}: {file_path}")
-                messagebox.showerror("File Open Error", f"Could not open file:\nPath: {file_path}")
+            if not file_path or not isinstance(file_path, pathlib.Path):
+                 print(f"Error: Invalid or missing file path for index {file_index} in self.file_data.")
+                 messagebox.showerror("Error", "Cannot open file: Path information is missing or corrupt.", parent=self.root)
+                 return
+
+            if not file_path.is_file():
+                print(f"Error: Original file path not found or is not a file: {file_path}")
+                messagebox.showerror("File Open Error", f"Cannot open file: The original file seems to be missing or moved.\nPath: {file_path}", parent=self.root)
+                return
+
+            # Attempt to open using platform-specific methods
+            self._open_folder_location(str(file_path)) # Reuse the folder opening logic for files
 
         except (ValueError, IndexError) as e:
-            print(f"Error parsing file index from IID '{header_iid}': {e}")
-            messagebox.showerror("Error", "Could not open file: Failed to determine file index.")
+            print(f"Error parsing file index from header IID '{header_iid}': {e}")
+            messagebox.showerror("Error", "Could not open file: Failed to determine file index from selection.", parent=self.root)
         except Exception as e:
-            print(f"Unexpected error opening file for IID '{header_iid}': {e}")
-            messagebox.showerror("Error", f"An unexpected error occurred: {e}")
+            print(f"Unexpected error opening file for header IID '{header_iid}': {e}")
+            traceback.print_exc()
+            messagebox.showerror("Error", f"An unexpected error occurred trying to open the file:\n{e}", parent=self.root)
 
 
     # --- Treeview Click Handlers ---
     def _on_tree_single_click_or_clear_edit(self, event):
-        # Check if click was on the edit box itself
-        widget = event.widget.winfo_containing(event.x_root, event.y_root)
-        is_click_on_edit_entry = (widget == self.edit_entry)
-
+        """Handles single clicks on the tree. Clears editor if click is outside."""
+        target_widget = self.root.winfo_containing(event.x_root, event.y_root)
         clicked_item_id = self.tree.identify_row(event.y)
 
-        # Save/clear existing edit *unless* the click was inside the edit box
-        if self.edit_entry and not is_click_on_edit_entry:
-            if self.edit_item_id and self.tree.exists(self.edit_item_id):
-                # Check if the click is outside the currently edited cell
+        if self.edit_entry:
+            if target_widget != self.edit_entry:
                 if clicked_item_id != self.edit_item_id:
-                    self._save_edit(self.edit_item_id, DIALOGUE_COLUMN_ID)
-                else:
-                    # If click is on the same item but not in edit box, maybe focus out occurred?
-                    # Let FocusOut handler manage saving if click is outside editor.
-                    # If focus remains in editor, do nothing here.
-                    pass
-            else:
-                # Edited item disappeared? Just destroy the editor.
-                self._destroy_edit_entry()
+                    if self.edit_item_id and self.tree.exists(self.edit_item_id):
+                        # Clicked elsewhere while editing, save current edit
+                        self._save_edit(self.edit_item_id, DIALOGUE_COLUMN_ID)
+                    else:
+                        # Edit entry exists but no valid item, just destroy
+                        self._destroy_edit_entry()
+                # If clicked back on the *same* item being edited, do nothing here
+                # (Let the edit entry handle it, or maybe save/cancel via its bindings)
 
 
     def _on_tree_double_click(self, event):
-        # Finish any existing edit first
+        """Handles double-clicks to open files (header) or start editing (cell)."""
+        # Save any existing edit first
         if self.edit_entry:
              if self.edit_item_id and self.tree.exists(self.edit_item_id):
                  self._save_edit(self.edit_item_id, DIALOGUE_COLUMN_ID)
@@ -508,916 +913,1720 @@ class JsonEditorApp:
         item_id = self.tree.identify_row(event.y)
         column_id_clicked = self.tree.identify_column(event.x)
 
-        if not item_id: return
+        if not item_id: return # Clicked outside of any item
 
         try:
+            if not self.tree.exists(item_id): return
             item_tags = self.tree.item(item_id, "tags")
-        except tk.TclError: return # Item might have disappeared
+        except tk.TclError:
+            print(f"Warning: TclError getting tags for item {item_id} on double-click.")
+            return
 
-        # Handle header double-click to open file
         if FILE_HEADER_TAG in item_tags:
             self._open_file_from_header(item_id)
-        # Handle data row double-click to start editing
         elif item_id in self.item_id_map:
-            # Check if the double-click was specifically on a cell in the Dialogue column
             if region == "cell" and column_id_clicked == DIALOGUE_COLUMN_ID:
                 self._start_editing(item_id, column_id_clicked)
 
-
     # --- Treeview Editing Logic ---
     def _start_editing(self, item_id, column_id):
-        self._destroy_edit_entry() # Ensure any previous editor is gone
+        """Creates an Entry widget over the selected cell to allow editing."""
+        self._destroy_edit_entry() # Clean up any previous editor
+
         bbox = self.tree.bbox(item_id, column=column_id)
-        if not bbox: return # Item might not be visible or exist
+        if not bbox: return # Item not visible or gone
 
         x, y, width, height = bbox
         current_text = self.tree.set(item_id, column_id)
+        self.edit_entry = ttk.Entry(self.tree, style='TEntry')
 
-        # Use themed entry colors
-        colors = THEMES.get(self.current_theme.get(), THEMES["Light"])
-
-        # Create the Entry widget as a child of the Treeview
-        self.edit_entry = ttk.Entry(self.tree, style='Treeview.TEntry') # Use a specific style if needed
-        # Configure the specific style (optional, might inherit from TEntry)
-        self.style.configure('Treeview.TEntry', fieldbackground=colors["entry_bg"], foreground=colors["entry_fg"])
-
-        # Place the Entry widget exactly over the cell
         self.edit_entry.place(x=x, y=y, width=width, height=height, anchor='nw')
 
         self.edit_entry.insert(0, current_text)
         self.edit_entry.select_range(0, tk.END)
         self.edit_entry.focus_set()
         self.edit_item_id = item_id
-        self._escape_pressed = False # Reset escape flag for new edit
+        self._escape_pressed = False # Reset escape flag
 
-        # Bind events to the Entry widget
         self.edit_entry.bind("<Return>", lambda e: self._save_edit(item_id, column_id))
         self.edit_entry.bind("<KP_Enter>", lambda e: self._save_edit(item_id, column_id))
-        self.edit_entry.bind("<FocusOut>", lambda e: self._save_edit_on_focus_out(item_id, column_id))
+        self.edit_entry.bind("<FocusOut>", self._save_edit_on_focus_out)
         self.edit_entry.bind("<Escape>", self._cancel_edit)
+        self.edit_entry.bind("<Button-3>", self._show_entry_context_menu)
 
-    def _save_edit_on_focus_out(self, item_id, column_id):
-        # Only save if Escape wasn't pressed
-        # This check helps prevent saving when focus is lost *because* Escape was pressed
-        if self.edit_entry and not self._escape_pressed:
-            if self.edit_item_id == item_id and self.tree.exists(item_id):
-                 self._save_edit(item_id, column_id)
-            else:
-                 # Item might have changed or disappeared, just destroy editor
+    def _save_edit_on_focus_out(self, event=None):
+        """Callback for FocusOut: saves edit if Escape wasn't pressed."""
+        # Check if focus is moving away from the edit entry itself
+        if event and self.edit_entry and event.widget == self.edit_entry and not self._escape_pressed:
+             if self.edit_item_id and self.tree.exists(self.edit_item_id):
+                 self._save_edit(self.edit_item_id, DIALOGUE_COLUMN_ID)
+             else:
+                 # Edit item ID became invalid somehow, just destroy
                  self._destroy_edit_entry()
-        elif self.edit_entry: # Escape was pressed, edit_entry still exists
-            self._destroy_edit_entry() # Destroy without saving
-
+        elif self.edit_entry and not self._escape_pressed:
+            # This handles cases where focus out happens without an event object
+            # or the event widget isn't the edit entry (less common)
+            # Still save if Escape wasn't the reason for losing focus
+            if self.edit_item_id and self.tree.exists(self.edit_item_id):
+                 self._save_edit(self.edit_item_id, DIALOGUE_COLUMN_ID)
+            else:
+                 self._destroy_edit_entry()
+        elif self.edit_entry and self._escape_pressed:
+            # If escape was pressed, FocusOut should just destroy without saving
+            self._destroy_edit_entry()
 
     def _save_edit(self, item_id, column_id):
-        # Check if the editor still exists and corresponds to the intended item
+        """Saves the text from the edit entry back to the tree and data."""
         if not self.edit_entry or item_id != self.edit_item_id:
-             # If edit_entry exists but item ID mismatch, maybe focus switched rapidly? Destroy it.
              if self.edit_entry: self._destroy_edit_entry()
              return
 
         new_text = self.edit_entry.get()
-        current_tree_text = ""
-        try:
-            # Check if the tree item still exists before trying to access it
-            if self.tree.exists(item_id):
-                 current_tree_text = self.tree.set(item_id, column_id)
-            else:
-                 print(f"Warning: Item {item_id} disappeared before saving edit.")
-                 self._destroy_edit_entry()
-                 return
-        except tk.TclError:
-             # This handles the case where the item might exist but is inaccessible (rare)
-             print(f"Warning: TclError accessing item {item_id} before saving edit.")
-             self._destroy_edit_entry()
-             return
-
-        # Only update if text has actually changed
-        if new_text != current_tree_text:
-            if self.tree.exists(item_id): # Check again right before setting
-                self.tree.set(item_id, column_id, new_text)
-            else:
-                 print(f"Warning: Item {item_id} disappeared just before updating tree view text.")
-                 self._destroy_edit_entry()
-                 return # Don't proceed if item vanished
-
-            # Update the backend data structure
-            if item_id in self.item_id_map:
-                map_info = self.item_id_map[item_id]
-                file_idx = map_info.get("file_index")
-                string_info_idx = map_info.get("string_info_index")
-                seg_idx = map_info.get("segment_index")
-
-                # Enhanced Robust Check for data integrity before update
-                if not (isinstance(file_idx, int) and
-                        isinstance(string_info_idx, int) and
-                        isinstance(seg_idx, int)):
-                     print(f"Error: Corrupt map info for IID '{item_id}' during save.")
-                     messagebox.showerror("Internal Error", f"Could not save change for item {item_id}.\nMap data inconsistent.")
-                     # Destroy editor, but leave inconsistent tree view state as is, maybe add visual error tag?
-                     self._destroy_edit_entry()
-                     return
-
-                try:
-                    # Verify data structure path exists and has correct types before assignment
-                    if not (0 <= file_idx < len(self.file_data) and
-                            isinstance(self.file_data[file_idx], dict) and
-                            isinstance(self.file_data[file_idx].get("en_strings"), list) and
-                            0 <= string_info_idx < len(self.file_data[file_idx]["en_strings"]) and
-                            isinstance(self.file_data[file_idx]["en_strings"][string_info_idx], dict) and
-                            isinstance(self.file_data[file_idx]["en_strings"][string_info_idx].get("segments"), list) and
-                            0 <= seg_idx < len(self.file_data[file_idx]["en_strings"][string_info_idx]["segments"]) and
-                            isinstance(self.file_data[file_idx]["en_strings"][string_info_idx]["segments"][seg_idx], dict)):
-                        # If the structure is broken, raise an error to prevent data corruption
-                        raise IndexError("Data structure integrity compromised during save attempt.")
-
-                    # Update the data
-                    self.file_data[file_idx]["en_strings"][string_info_idx]["segments"][seg_idx]["text"] = new_text
-                except (IndexError, KeyError, TypeError) as e:
-                     print(f"Error: Data structure issue during save for IID '{item_id}'. Error: {e}")
-                     messagebox.showerror("Internal Error", f"Could not save change for item {item_id}.\nData inconsistent.")
-                     # Consider reverting the tree view change here if the data save failed
-                     # if self.tree.exists(item_id):
-                     #     self.tree.set(item_id, column_id, current_tree_text)
-            else:
-                 # This should ideally not happen if item_id exists and isn't a header/separator
-                 print(f"Error: Could not find map info for IID '{item_id}' during save.")
-
-        # Destroy the editor whether saved or not (unless an error prevented it)
-        self._destroy_edit_entry()
+        # Update function handles tree update, data update, and undo logging
+        update_successful = self._update_tree_and_data(item_id, new_text)
+        self._destroy_edit_entry() # Destroy the entry regardless of success
 
     def _cancel_edit(self, event=None):
-        self._escape_pressed = True # Set flag to prevent FocusOut save
-        self._destroy_edit_entry() # Destroy the editor immediately
-        return "break" # Prevent further processing of the Escape key
+        """Cancels the current edit operation without saving."""
+        self._escape_pressed = True # Set flag to prevent save on focus out
+        self._destroy_edit_entry()
+        if self.tree.winfo_exists(): self.tree.focus_set() # Return focus to tree
+        return "break" # Stop further event propagation
 
     def _destroy_edit_entry(self):
+        """Safely destroys the editing widget and resets state."""
         if self.edit_entry:
-            # Explicitly unbind events before destroying to prevent race conditions
+            entry = self.edit_entry
+            self.edit_entry = None # Clear reference first
+            self.edit_item_id = None
             try:
-                self.edit_entry.unbind("<Return>")
-                self.edit_entry.unbind("<KP_Enter>")
-                self.edit_entry.unbind("<FocusOut>")
-                self.edit_entry.unbind("<Escape>")
-            except tk.TclError:
-                pass # Widget might already be gone
-            self.edit_entry.destroy()
-        self.edit_entry = None
-        self.edit_item_id = None
-        # Don't reset escape_pressed here, FocusOut might need it
-        # Give focus back to the tree so keyboard navigation works
-        self.tree.focus_set()
+                if entry.winfo_exists():
+                    # Unbind specific events to prevent callbacks after destroy
+                    entry.unbind("<Return>")
+                    entry.unbind("<KP_Enter>")
+                    entry.unbind("<FocusOut>")
+                    entry.unbind("<Escape>")
+                    entry.unbind("<Button-3>")
+                    entry.destroy()
+            except tk.TclError: pass # Ignore errors during destroy
+            except Exception as e: print(f"Error destroying edit entry: {e}")
+        self._escape_pressed = False # Reset escape flag
 
 
     # --- File Loading Logic ---
-    def _find_en_string_line_numbers(self, file_path):
-        line_numbers = []
+    def _detect_format(self, data):
+        """Detects if the JSON data matches DLGE or LOCR format."""
+        if isinstance(data, list) and data:
+            first_item = data[0]
+            # DLGE Check: List of Dicts with "Language" and "String"
+            if isinstance(first_item, dict) and "Language" in first_item and "String" in first_item:
+                if all(isinstance(item, dict) and "Language" in item and "String" in item for item in data):
+                    return FORMAT_DLGE
+            # LOCR Check: List of Lists, where inner list starts with {"Language": ...}
+            elif isinstance(first_item, list) and first_item:
+                 first_inner_item = first_item[0]
+                 if isinstance(first_inner_item, dict) and "Language" in first_inner_item:
+                     # Check if subsequent elements are string/hash dicts (basic check)
+                     is_likely_locr = True
+                     if len(first_item) > 1:
+                         is_likely_locr = isinstance(first_item[1], dict) and "String" in first_item[1] and "StringHash" in first_item[1]
+
+                     if is_likely_locr:
+                          # Check if all top-level items follow this list pattern
+                          if all(isinstance(outer_item, list) and outer_item and isinstance(outer_item[0], dict) and "Language" in outer_item[0] for outer_item in data):
+                              return FORMAT_LOCR
+        return FORMAT_UNKNOWN
+
+    def _find_en_string_line_numbers(self, file_path, file_format):
+        """Finds line numbers for 'String' keys within 'en' language sections.
+
+        Returns:
+            A dictionary mapping index information to line numbers.
+            DLGE: {original_item_index: line_number}
+            LOCR: {(original_lang_block_index, original_string_item_index): line_number}
+            Returns an empty dict on error or if no 'en' strings found.
+        """
+        line_map = {}
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
 
-            in_object = False
-            brace_count = 0
-            found_lang_en_in_current_object = False
-            string_line_num_for_current_object = None
-            potential_string_line = None # Track the line where "String" appears
+            if file_format == FORMAT_DLGE:
+                object_index = -1 # Index in the outer list
+                in_object = False
+                is_current_object_en = False
+                brace_level = 0
+                found_string_in_current_object = False
 
-            for i, line in enumerate(lines):
-                line_num = i + 1
-                stripped_line = line.strip()
+                for i, line in enumerate(lines):
+                    line_num = i + 1
+                    stripped_line = line.strip()
+                    if stripped_line.startswith("//") or stripped_line.startswith("#"): continue
 
-                # Simple comment skipping (might need refinement for complex cases)
-                if stripped_line.startswith("//") or stripped_line.startswith("#"):
-                    continue
-
-                # Handle braces to track object scope
-                open_braces = line.count('{')
-                close_braces = line.count('}')
-
-                if not in_object:
-                    if '{' in line:
+                    # Detect object start/end based on braces at level 0
+                    if '{' in line and brace_level == 0:
+                        object_index += 1
                         in_object = True
-                        # Reset state for the new object
-                        brace_count = 0
-                        found_lang_en_in_current_object = False
-                        string_line_num_for_current_object = None
-                        potential_string_line = None
-                        # Calculate initial brace count carefully, handling multiple braces on one line
-                        brace_count += open_braces
-                        brace_count -= close_braces
-                else: # Already inside an object
-                    brace_count += open_braces
-                    brace_count -= close_braces
+                        is_current_object_en = False
+                        found_string_in_current_object = False # Reset flag for new object
+                        brace_level += line.count('{') - line.count('}') # Handle braces on the same line
+                        if brace_level < 0: brace_level = 0 # Safety
+                        if brace_level == 0: in_object = False # Object starts and ends on the same line
+                    elif in_object:
+                        brace_level += line.count('{')
+                        brace_level -= line.count('}')
 
-                # Inside an object, look for keys
-                if in_object:
-                    # Check for "Language": "en"
-                    if not found_lang_en_in_current_object and LANG_EN_REGEX.search(line):
-                        found_lang_en_in_current_object = True
-                        # If we already found "String", associate its line number now
-                        if potential_string_line is not None:
-                            string_line_num_for_current_object = potential_string_line
+                    if in_object:
+                        # Check for language *within* the current object
+                        if not is_current_object_en and LANG_EN_REGEX.search(line):
+                            is_current_object_en = True
 
-                    # Check for "String":
-                    # Only store the *first* potential "String" line within the current object context
-                    if potential_string_line is None and STRING_KEY_REGEX.search(line):
-                         potential_string_line = line_num
-                         # If we already found "en", associate this line number immediately
-                         if found_lang_en_in_current_object:
-                             string_line_num_for_current_object = potential_string_line
+                        # Check for the string key *within* the current 'en' object
+                        # Only map the *first* "String": line found within an 'en' object
+                        if is_current_object_en and not found_string_in_current_object and STRING_KEY_REGEX.search(line):
+                             line_map[object_index] = line_num
+                             found_string_in_current_object = True # Mark as found for this object
 
-                # Check for end of object
-                # Need brace_count <= 0 because } might be on the same line as the last {
-                if in_object and brace_count <= 0 and '}' in line : # Check if a closing brace exists on this line
-                    if found_lang_en_in_current_object and string_line_num_for_current_object is not None:
-                        line_numbers.append(string_line_num_for_current_object)
+                    # Reset object state if brace level drops to 0
+                    if brace_level <= 0 and in_object:
+                        in_object = False
+                        is_current_object_en = False
+                        found_string_in_current_object = False
+                        brace_level = 0
 
-                    # Reset for the next potential object
-                    in_object = False
-                    brace_count = 0
-                    found_lang_en_in_current_object = False
-                    string_line_num_for_current_object = None
-                    potential_string_line = None
-                    # Handle cases like { ... } { ... } on one line: If braces remain, stay in object
-                    if brace_count > 0: in_object = True
+            elif file_format == FORMAT_LOCR:
+                lang_block_idx = -1
+                item_idx_in_block = 0 # 0=Lang dict, 1=first string dict, etc.
+                in_lang_block_list = False # Inside the outer [...]
+                in_item_list = False     # Inside the inner [...]
+                is_current_block_en = False
+                bracket_level = 0
+                brace_level_locr = 0 # To track dicts inside the inner list
+
+                for i, line in enumerate(lines):
+                    line_num = i + 1
+                    stripped_line = line.strip()
+                    if stripped_line.startswith("//") or stripped_line.startswith("#"): continue
+
+                    # Track bracket levels for lists
+                    open_brackets = line.count('[')
+                    close_brackets = line.count(']')
+
+                    if open_brackets > 0:
+                        if bracket_level == 0: # Entering outer list
+                            in_lang_block_list = True
+                        elif bracket_level == 1: # Entering inner list
+                            in_item_list = True
+                            lang_block_idx += 1
+                            item_idx_in_block = 0 # Reset item counter for new block
+                            is_current_block_en = False
+                            brace_level_locr = 0 # Reset brace level for items in this block
+                        bracket_level += open_brackets
+
+                    # Track brace levels for dictionaries *inside* the item list
+                    if in_item_list:
+                         # Count dictionaries starting *after* the language dictionary
+                        if '{' in line and brace_level_locr == 0:
+                            item_idx_in_block += 1 # Increment dict count (1st dict is lang, 2nd is first string item, etc.)
+                        brace_level_locr += line.count('{')
+                        brace_level_locr -= line.count('}')
+                        if brace_level_locr < 0: brace_level_locr = 0
+
+                    # Process based on state
+                    if in_item_list:
+                        # Check for Language: en only on the first item's dict (item_idx_in_block == 1)
+                        if item_idx_in_block == 1 and LANG_EN_REGEX.search(line):
+                             is_current_block_en = True
+
+                        # Check for String: on subsequent items (index > 1) IF it's an 'en' block
+                        # The index here needs to map to the *string item index* (1st string = index 1, etc.)
+                        # So we use `item_idx_in_block - 1` for the map key.
+                        string_item_map_idx = item_idx_in_block - 1
+                        if is_current_block_en and string_item_map_idx > 0 and STRING_KEY_REGEX.search(line):
+                             map_key = (lang_block_idx, string_item_map_idx) # Key is (block_index, 1-based index *among string items*)
+                             if map_key not in line_map: # Store first occurrence for this specific item index
+                                 line_map[map_key] = line_num
+
+                    # Track closing brackets
+                    if close_brackets > 0:
+                        original_level = bracket_level
+                        bracket_level -= close_brackets
+                        if bracket_level < 0: bracket_level = 0 # Safety
+
+                        if original_level == 2 and bracket_level == 1: # Leaving inner list
+                             in_item_list = False
+                             is_current_block_en = False # Reset language flag when leaving inner list
+                        elif original_level == 1 and bracket_level == 0: # Leaving outer list
+                             in_lang_block_list = False
 
         except Exception as e:
-            print(f"Warning: Could not read lines for line number detection in {file_path.name}: {e}")
-        return line_numbers
+            print(f"Warning: Could not parse lines for accurate line number detection in {file_path.name}: {e}")
+            traceback.print_exc() # More detail on error
+
+        # print(f"Debug: Line map for {file_path.name} ({file_format}): {line_map}") # Debugging
+        return line_map
 
 
     def load_json_files(self):
+        """Loads JSON files, detects format, parses 'en' strings, and populates treeview."""
         folder_path = self.input_folder.get()
-        if not folder_path: return
+        if not folder_path:
+            self.status_label.config(text="Status: No input folder selected.")
+            return
 
-        self._clear_search() # Clear search results and highlighting
-        self.file_data = [] # Reset internal data
-        self.item_id_map = {} # Reset item mapping
-        self._destroy_edit_entry() # Clear any active edit cell
-        for item in self.tree.get_children(): # Clear treeview
-            self.tree.delete(item)
+        # --- Reset State ---
+        self._clear_search()
+        self.file_data = []
+        self.item_id_map = {}
+        self._destroy_edit_entry()
+        if self.tree.winfo_exists(): self.tree.delete(*self.tree.get_children())
+        self._clear_undo_redo()
 
-        self.status_label.config(text="Status: Loading...")
-        self.root.update_idletasks() # Show status update immediately
+        self.status_label.config(text="Status: Loading files...")
+        self.root.update_idletasks()
 
-        segment_count = 0
-        files_with_line_num_errors = []
+        # --- Initialization ---
+        loaded_items_count = 0
         processed_file_count = 0
-        loaded_file_count = 0 # Count files actually added to file_data
+        loaded_file_count = 0
+        error_files_load = []
+        unsupported_files = []
 
         try:
-            # Use pathlib for robust path handling
             p_folder_path = pathlib.Path(folder_path)
             if not p_folder_path.is_dir():
-                raise FileNotFoundError(f"Input path is not a valid directory: {folder_path}")
+                messagebox.showerror("Error", f"Input path is not a valid directory:\n{folder_path}", parent=self.root)
+                self.status_label.config(text="Status: Error - Input folder not found or invalid.")
+                return
 
-            all_items = list(p_folder_path.iterdir())
             json_files = sorted([
-                item for item in all_items
-                if item.is_file() and item.suffix.lower() == '.json' and not item.name.lower().endswith('.json.meta')
+                item for item in p_folder_path.glob('*.json')
+                if item.is_file() and not item.name.lower().endswith('.json.meta')
             ])
 
             if not json_files:
                  self.status_label.config(text="Status: No non-meta .json files found in input folder.")
-                 self._update_save_state()
+                 self._update_save_state(); self._update_search_replace_button_states(); self._update_import_export_state()
                  return
 
-            temp_file_data_list = [] # Collect valid data before assigning to self.file_data
-
+            # --- Process Each File ---
+            temp_file_data_list = []
             for file_path in json_files:
                 processed_file_count += 1
-                # Get line numbers first (best effort)
-                en_string_line_numbers = self._find_en_string_line_numbers(file_path)
-                line_num_mismatch_detected = False # Flag for mismatch within this file
+                file_format = FORMAT_UNKNOWN
+                en_string_line_map = {} # Initialize map for this file
 
                 try:
+                    # Load JSON content first to detect format
                     with open(file_path, 'r', encoding='utf-8') as f:
                         content = json.load(f)
-                except (json.JSONDecodeError, Exception) as e:
-                    print(f"Warning: Skipping file {file_path.name} due to read/parse error: {e}");
-                    continue # Skip to next file
 
-                # Expect content to be a list of objects
-                if not isinstance(content, list):
-                    print(f"Warning: Skipping file {file_path.name} - content is not a list.");
-                    continue # Skip to next file
+                    file_format = self._detect_format(content)
 
-                file_entry = { "path": file_path, "json_content": content, "en_strings": [] }
-                found_en_in_file = False
-                current_en_strings_data = [] # Store 'en' strings found in this file
-                en_object_counter_in_file = 0 # Track how many 'en' objects we find in JSON
+                    if file_format == FORMAT_UNKNOWN:
+                         print(f"Warning: Skipping file {file_path.name} - Unrecognized or unsupported JSON structure.")
+                         unsupported_files.append(file_path.name)
+                         continue
 
-                # Iterate through the items in the JSON list
-                for item_idx_in_json, item in enumerate(content):
-                     # Check if the item is a dictionary and has "Language": "en"
-                     if isinstance(item, dict) and item.get("Language") == "en":
-                        found_en_in_file = True
-                        original_string = item.get("String", "") # Get the dialogue string
-                        segments_data = [] # To store parsed segments
+                    # *** GET LINE NUMBER MAP ***
+                    try:
+                        en_string_line_map = self._find_en_string_line_numbers(file_path, file_format)
+                    except Exception as e_ln:
+                         print(f"Error getting line numbers for {file_path.name}: {e_ln}")
 
-                        # Try to get the corresponding line number
-                        line_num = en_string_line_numbers[en_object_counter_in_file] if en_object_counter_in_file < len(en_string_line_numbers) else None
+                    # --- Prepare data structure for this file ---
+                    # Store original content for reference/saving, but primarily work with en_strings
+                    file_entry = {"path": file_path, "format": file_format, "json_content": content, "en_strings": []}
+                    current_en_strings_data = []
+                    found_en_in_file = False
 
-                        # Detect mismatch if we run out of line numbers from parsing
-                        if line_num is None and en_object_counter_in_file >= len(en_string_line_numbers):
-                             line_num_mismatch_detected = True
+                    # --- Process based on detected format ---
+                    if file_format == FORMAT_DLGE:
+                        for item_idx, item in enumerate(content):
+                            if isinstance(item, dict) and item.get("Language") == "en":
+                                found_en_in_file = True
+                                original_string = item.get("String", "") # Store original string as baseline
+                                segments_data = []
+                                line_num = en_string_line_map.get(item_idx, None) # Lookup by item index
 
-                        # Use regex to find segments (prefix + text)
-                        matches = list(SEGMENT_REGEX.finditer(original_string))
-                        if matches:
-                            # If segments found, store each part
-                            for seg_idx, match in enumerate(matches):
-                                segments_data.append({
-                                    "original_prefix": match.group(1),
-                                    "text": match.group(2),
-                                    "iid": None # Placeholder for Treeview Item ID
+                                matches = list(SEGMENT_REGEX.finditer(original_string))
+                                if matches:
+                                    for seg_idx, match in enumerate(matches):
+                                        segments_data.append({
+                                            "original_prefix": match.group(1),
+                                            "text": match.group(2), # This is the editable part
+                                            "iid": None
+                                        })
+                                else:
+                                    # No segments, store the whole string as one editable segment
+                                    segments_data.append({ "original_prefix": None, "text": original_string, "iid": None })
+
+                                current_en_strings_data.append({
+                                    "original_item_index": item_idx,
+                                    "original_line_number": line_num,
+                                    "original_string": original_string, # Baseline for comparison
+                                    "segments": segments_data
                                 })
-                        else:
-                            # If no segments match, treat the whole string as one segment
-                            segments_data.append({
-                                "original_prefix": None,
-                                "text": original_string,
-                                "iid": None
-                            })
 
-                        # Store the collected info for this "en" string
-                        current_en_strings_data.append({
-                            "original_item_index": item_idx_in_json, # Index in original JSON list
-                            "original_line_number": line_num, # Line number from text parsing (or None)
-                            "original_string": original_string, # The full original string
-                            "segments": segments_data # List of parsed segments
-                        })
-                        en_object_counter_in_file += 1 # Increment counter for found 'en' objects
+                    elif file_format == FORMAT_LOCR:
+                        for lang_block_idx, lang_block in enumerate(content):
+                            if isinstance(lang_block, list) and len(lang_block) > 0 and \
+                               isinstance(lang_block[0], dict) and lang_block[0].get("Language") == "en":
+                                found_en_in_file = True
+                                # Iterate through the string items in this 'en' block (index 1 onwards)
+                                for string_item_list_idx, string_item in enumerate(lang_block[1:], start=1):
+                                    if isinstance(string_item, dict) and "String" in string_item:
+                                        text = string_item.get("String", "")
+                                        string_hash = string_item.get("StringHash", None) # Keep hash
+                                        # Map key uses 1-based index relative to *string items*
+                                        map_key = (lang_block_idx, string_item_list_idx)
+                                        line_num = en_string_line_map.get(map_key, None)
 
-                # After processing the file, check for line number count mismatches
-                if found_en_in_file and (en_object_counter_in_file != len(en_string_line_numbers) or line_num_mismatch_detected):
-                     if file_path.name not in files_with_line_num_errors:
-                         files_with_line_num_errors.append(file_path.name)
-                         print(f"Warning: Line number mismatch/issue in {file_path.name}. JSON 'en' count: {en_object_counter_in_file}, Text parse line# count: {len(en_string_line_numbers)}.")
+                                        # Store the *absolute* index within the inner list (0=lang, 1=str1, 2=str2...)
+                                        original_string_item_index_in_list = string_item_list_idx # This is the index used for saving
 
-                # If we found any "en" strings, add this file's data to our temporary list
-                if found_en_in_file:
-                    file_entry["en_strings"] = current_en_strings_data
-                    temp_file_data_list.append(file_entry)
-                    loaded_file_count += 1
+                                        current_en_strings_data.append({
+                                            "original_lang_block_index": lang_block_idx,
+                                            "original_string_item_index": original_string_item_index_in_list, # Absolute index for saving
+                                            "original_line_number": line_num,
+                                            "string_hash": string_hash,
+                                            "text": text, # Editable text
+                                            "original_text": text, # Baseline for comparison
+                                            "iid": None
+                                        })
+
+                    # Add file's data if 'en' strings were found
+                    if found_en_in_file:
+                        file_entry["en_strings"] = current_en_strings_data
+                        temp_file_data_list.append(file_entry)
+                        loaded_file_count += 1
+                    # Else: No 'en' strings found, file is processed but not added to editable data
 
 
-            # --- Populate Treeview from collected data ---
-            self.file_data = temp_file_data_list # Assign collected valid data
+                except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                    print(f"Warning: Skipping file {file_path.name} due to JSON/encoding error: {e}")
+                    error_files_load.append(f"{file_path.name} (Parse Error)")
+                except IOError as e:
+                    print(f"Warning: Skipping file {file_path.name} due to I/O error: {e}")
+                    error_files_load.append(f"{file_path.name} (I/O Error)")
+                except Exception as e:
+                    print(f"Error processing file {file_path.name} ({file_format}): {type(e).__name__}: {e}")
+                    traceback.print_exc()
+                    error_files_load.append(f"{file_path.name} (Processing Error: {type(e).__name__})")
+
+            # --- Populate Treeview from Processed Data ---
+            self.file_data = temp_file_data_list
+            tree_row_count = 0
 
             for file_index, file_entry in enumerate(self.file_data):
-                # Insert a header row for the file
+                file_format = file_entry["format"]
+                file_path_name = file_entry['path'].name
                 header_iid = f"header_{file_index}"
-                header_display_text = f"--- File: {file_entry['path'].name} (Double-click to open) ---"
+                header_display_text = f"--- File: {file_path_name} ({file_format}) (Double-click to open) ---"
                 self.tree.insert('', tk.END, iid=header_iid, values=(f"FILE {file_index+1}", "", header_display_text), tags=(FILE_HEADER_TAG,))
 
-                # Iterate through the "en" strings found in this file
+                # Add data rows based on format
                 for string_info_idx, string_info in enumerate(file_entry["en_strings"]):
-                    line_num_display = str(string_info.get("original_line_number") or "??") # Display line number or '??'
-                    # Iterate through the segments of this string
-                    for segment_idx, segment in enumerate(string_info["segments"]):
-                        # Create a unique Item ID (IID) for the treeview row
-                        iid = f"f{file_index}_i{string_info['original_item_index']}_s{segment_idx}"
-                        segment['iid'] = iid # Store the IID back in the segment data
-                        prefix_display = segment["original_prefix"] if segment["original_prefix"] else ""
-                        text_display = segment["text"]
-                        # Insert the segment data into the treeview
-                        self.tree.insert('', tk.END, iid=iid, values=(line_num_display, prefix_display, text_display))
-                        segment_count += 1 # Increment total segment counter
-                        # Map the IID to its location in the data structure for easy lookup
+                    line_num_display = str(string_info.get("original_line_number") or "??")
+
+                    if file_format == FORMAT_DLGE:
+                        for segment_idx, segment in enumerate(string_info["segments"]):
+                            # Unique IID for DLGE segment
+                            iid = f"f{file_index}_i{string_info['original_item_index']}_s{segment_idx}"
+                            segment['iid'] = iid # Store IID back in the segment data
+                            prefix_display = segment.get("original_prefix", "") or ""
+                            text_display = segment["text"] # Display the editable text part
+
+                            # Column values: Line#, Prefix, Editable Text
+                            self.tree.insert('', tk.END, iid=iid, values=(line_num_display, prefix_display, text_display))
+                            tree_row_count += 1
+                            loaded_items_count += 1
+
+                            # Map IID for DLGE
+                            self.item_id_map[iid] = {
+                                "file_index": file_index,
+                                "string_info_index": string_info_idx,
+                                "segment_index": segment_idx # Store segment index
+                            }
+
+                    elif file_format == FORMAT_LOCR:
+                        # Unique IID for LOCR string item
+                        lang_block_idx = string_info["original_lang_block_index"]
+                        # Use the absolute item index in the list for uniqueness
+                        item_idx_in_list = string_info["original_string_item_index"]
+                        iid = f"f{file_index}_lb{lang_block_idx}_si{item_idx_in_list}"
+                        string_info['iid'] = iid # Store IID back in the string info data
+                        string_hash_display = str(string_info.get("string_hash") or "NO HASH")
+                        text_display = string_info["text"] # Display the editable text
+
+                        # Display line number (if found) or hash in the first column (Line / ID)
+                        col1_display = line_num_display if string_info.get("original_line_number") else f"H:{string_hash_display}"
+                        # Column values: Line#/Hash, Hash, Editable Text
+                        self.tree.insert('', tk.END, iid=iid, values=(col1_display, string_hash_display, text_display))
+                        tree_row_count += 1
+                        loaded_items_count += 1
+
+                        # Map IID for LOCR
                         self.item_id_map[iid] = {
                             "file_index": file_index,
                             "string_info_index": string_info_idx,
-                            "segment_index": segment_idx
+                            "segment_index": None # No segment index for LOCR
                         }
 
-                # Insert a separator row after each file's data
-                sep_iid = f"filesep_{file_index}"
-                # Separator gets empty values and the SEPARATOR_TAG for styling
-                self.tree.insert('', tk.END, iid=sep_iid, values=("", "", ""), open=False, tags=(SEPARATOR_TAG,))
-            # --- End Populate Treeview ---
+                # Add separator row between files if more files exist
+                if file_index < len(self.file_data) - 1:
+                    sep_iid = f"filesep_{file_index}"
+                    self.tree.insert('', tk.END, iid=sep_iid, values=("", "", ""), tags=(SEPARATOR_TAG,), open=False)
+                    tree_row_count += 1
 
-            status_msg = f"Status: Loaded {loaded_file_count} files with 'en' strings | Displaying {segment_count} editable segments."
-            if files_with_line_num_errors:
-                 status_msg += f" | Line# detection issues in {len(files_with_line_num_errors)} file(s) (see console)."
+
+            # --- Final Status Update ---
+            status_msg = f"Status: Loaded {loaded_file_count}/{processed_file_count} files | Displaying {loaded_items_count} items."
+            if unsupported_files:
+                 status_msg += f" | {len(unsupported_files)} unsupported format(s)."
+            if error_files_load:
+                 status_msg += f" | {len(error_files_load)} file(s) failed to load/process."
             self.status_label.config(text=status_msg)
 
+            if error_files_load or unsupported_files:
+                 error_list = "\n - ".join(error_files_load + [f"{n} (Unsupported)" for n in unsupported_files])
+                 messagebox.showwarning("Loading Issues", f"Finished loading, but some files had issues:\n\n - {error_list}\n\nCheck console for details.", parent=self.root)
+
         except FileNotFoundError as e:
-            messagebox.showerror("Error", str(e))
+            messagebox.showerror("Error", str(e), parent=self.root)
             self.status_label.config(text="Status: Error - Input folder not found.")
         except Exception as e:
-            messagebox.showerror("Error", f"An unexpected error occurred during loading: {e}")
-            self.status_label.config(text=f"Status: Error - {e}")
-            print(f"Loading Error Type: {type(e)}\nLoading Error: {e}")
-            import traceback; traceback.print_exc()
+            messagebox.showerror("Critical Loading Error", f"An unexpected error occurred during the loading process: {e}", parent=self.root)
+            self.status_label.config(text=f"Status: Critical error during load - {e}")
+            print(f"Loading Process Error Type: {type(e)}\nLoading Error: {e}")
+            traceback.print_exc()
         finally:
-            self._update_save_state() # Update save state after loading (or attempting to)
+            # Update states regardless of success or failure
+            self._update_save_state()
+            self._update_search_replace_button_states()
+            self._update_import_export_state()
+            self._update_folder_open_button_states()
 
+    # --- Search & Replace Logic ---
+    def _update_search_replace_button_states(self):
+        """Updates the enabled/disabled state of search and replace buttons."""
+        has_results = bool(self.search_results)
+        has_data = bool(self.item_id_map) # Check if any editable data is loaded
 
-    # --- Search Logic ---
+        # Find buttons depend only on having data to search
+        find_state = tk.NORMAL if has_data else tk.DISABLED
+        if hasattr(self, 'find_button'): self.find_button.config(state=find_state)
+        if hasattr(self, 'find_all_button'): self.find_all_button.config(state=find_state)
+        if hasattr(self, 'edit_menu'):
+            try:
+                find_menu_index = self.edit_menu.index("Find / Focus Search")
+                if find_menu_index is not None and find_menu_index != tk.NONE: self.edit_menu.entryconfigure(find_menu_index, state=find_state)
+                findall_menu_index = self.edit_menu.index("Find All")
+                if findall_menu_index is not None and findall_menu_index != tk.NONE: self.edit_menu.entryconfigure(findall_menu_index, state=find_state)
+            except (tk.TclError, AttributeError): pass
+
+        # Next/Prev/Replace buttons depend on having search results
+        results_state = tk.NORMAL if has_results else tk.DISABLED
+        if hasattr(self, 'next_button'): self.next_button.config(state=results_state)
+        if hasattr(self, 'prev_button'): self.prev_button.config(state=results_state)
+        if hasattr(self, 'replace_button'): self.replace_button.config(state=results_state)
+        if hasattr(self, 'replace_all_button'): self.replace_all_button.config(state=results_state)
+        if hasattr(self, 'edit_menu'):
+            try:
+                next_menu_index = self.edit_menu.index("Find Next")
+                if next_menu_index is not None and next_menu_index != tk.NONE: self.edit_menu.entryconfigure(next_menu_index, state=results_state)
+                prev_menu_index = self.edit_menu.index("Find Previous")
+                if prev_menu_index is not None and prev_menu_index != tk.NONE: self.edit_menu.entryconfigure(prev_menu_index, state=results_state)
+            except (tk.TclError, AttributeError): pass
+
     def _focus_search(self, event=None):
-        """Sets focus to the search entry and selects existing text."""
-        self.search_entry.focus_set()
-        self.search_entry.select_range(0, tk.END)
-        return "break" # Prevent further event processing if bound
+        """Sets focus to the search entry."""
+        if hasattr(self, 'search_entry'):
+             self.search_entry.focus_set()
+             self.search_entry.select_range(0, tk.END)
+        if event: return "break" # Prevent further event processing if called from binding
 
     def _check_clear_search_on_empty(self, event=None):
-        # If search box is cleared by user, reset search state
-        if not self.search_term.get() and self.search_results:
+        """Clears search results if the search term becomes empty."""
+        if not self.search_term.get() and (self.search_results or self._last_search_was_findall):
              self._clear_search()
 
     def _perform_search(self, event=None):
-        self._destroy_edit_entry() # Ensure edits are saved/cancelled first
+        """Performs a sequential search (Find)."""
+        self._destroy_edit_entry() # Finish any edit first
         term = self.search_term.get()
         if not term:
-            self._clear_search() # If search term is empty, clear results
-            return
+            self._clear_search()
+            return "break" if event else None
 
-        self._clear_search_highlight() # Remove old highlights
+        self._clear_search_highlight() # Remove previous single highlights
         self.search_results = []
         self.current_search_index = -1
-        term_lower = term.lower() # Case-insensitive search
+        term_lower = term.lower()
+        self._last_search_was_findall = False # Mark as regular find
 
-        # Iterate through all data items (segments) using the map
-        for iid in self.item_id_map.keys():
+        all_iids_in_order = []
+        if self.tree.winfo_exists(): all_iids_in_order = self.tree.get_children('')
+        editable_iids = [iid for iid in all_iids_in_order if iid in self.item_id_map]
+
+        for iid in editable_iids:
             try:
-                # Ensure the item still exists in the tree
                 if not self.tree.exists(iid): continue
-                # Get the dialogue text for the item
                 dialogue_text = self.tree.set(iid, DIALOGUE_COLUMN_ID)
-                # Check if the search term is in the text
                 if term_lower in dialogue_text.lower():
-                    self.search_results.append(iid) # Add item ID to results list
-                    # Add the highlight tag to the item
-                    current_tags = list(self.tree.item(iid, "tags")) # Get existing tags as list
-                    if SEARCH_HIGHLIGHT_TAG not in current_tags:
-                         self.tree.item(iid, tags=current_tags + [SEARCH_HIGHLIGHT_TAG])
+                    self.search_results.append(iid)
+            except tk.TclError:
+                 print(f"Warning: TclError accessing item {iid} during search.")
             except Exception as e:
-                 # Log errors if an item causes issues during search
                  print(f"Error accessing item {iid} during search: {e}")
 
-        # Update status based on search results
         if self.search_results:
-            self.current_search_index = 0 # Go to the first result
+            self.current_search_index = 0
             self._focus_search_result(self.current_search_index)
-            self.status_label.config(text=f"Status: Found {len(self.search_results)} match(es) for '{term}'.")
+            self.status_label.config(text=f"Status: Found {len(self.search_results)} match(es) for '{term}'. Showing 1.")
         else:
             self.status_label.config(text=f"Status: No matches found for '{term}'.")
-        # Keep focus in search entry for easy next/prev/new search
-        self.search_entry.focus_set()
 
+        self._update_search_replace_button_states()
+        return "break" if event else None
+
+    def _find_all(self, event=None):
+        """Finds and highlights all occurrences."""
+        self._destroy_edit_entry() # Finish any edit first
+        term = self.search_term.get()
+        if not term:
+            self._clear_search()
+            return "break" if event else None
+
+        self._clear_search_highlight()
+        self.search_results = []
+        self.current_search_index = -1
+        term_lower = term.lower()
+        self._last_search_was_findall = True
+
+        found_count = 0
+        all_iids_in_order = []
+        if self.tree.winfo_exists(): all_iids_in_order = self.tree.get_children('')
+        editable_iids = [iid for iid in all_iids_in_order if iid in self.item_id_map]
+
+        for iid in editable_iids:
+            try:
+                if not self.tree.exists(iid): continue
+                dialogue_text = self.tree.set(iid, DIALOGUE_COLUMN_ID)
+                if term_lower in dialogue_text.lower():
+                    self.search_results.append(iid)
+                    current_tags = list(self.tree.item(iid, "tags"))
+                    if SEARCH_HIGHLIGHT_TAG not in current_tags:
+                         self.tree.item(iid, tags=current_tags + [SEARCH_HIGHLIGHT_TAG])
+                    found_count += 1
+            except tk.TclError:
+                 print(f"Warning: TclError accessing item {iid} during Find All.")
+            except Exception as e:
+                 print(f"Error accessing item {iid} during Find All: {e}")
+
+        if self.search_results:
+            self.current_search_index = 0
+            self._focus_search_result(self.current_search_index)
+            self.status_label.config(text=f"Status: Found and highlighted {found_count} match(es) for '{term}'.")
+        else:
+            self.status_label.config(text=f"Status: No matches found for '{term}'.")
+
+        self._update_search_replace_button_states()
+        return "break" if event else None
 
     def _find_next(self, event=None):
-        if not self.search_results: return # No results to cycle through
-        self._destroy_edit_entry() # Ensure edits are finished
-        # Increment index, wrapping around if needed
+        """Moves focus to the next search result."""
+        if not self.search_results: return "break" if event else None
+        self._destroy_edit_entry() # Ensure edit isn't active
         self.current_search_index = (self.current_search_index + 1) % len(self.search_results)
         self._focus_search_result(self.current_search_index)
-        # Update status bar
         self.status_label.config(text=f"Status: Showing match {self.current_search_index + 1} of {len(self.search_results)} for '{self.search_term.get()}'.")
-        self.search_entry.focus_set()
-
+        return "break" if event else None
 
     def _find_previous(self, event=None):
-        if not self.search_results: return # No results to cycle through
-        self._destroy_edit_entry() # Ensure edits are finished
-        # Decrement index, wrapping around if needed
+        """Moves focus to the previous search result."""
+        if not self.search_results: return "break" if event else None
+        self._destroy_edit_entry() # Ensure edit isn't active
         self.current_search_index = (self.current_search_index - 1 + len(self.search_results)) % len(self.search_results)
         self._focus_search_result(self.current_search_index)
-        # Update status bar
         self.status_label.config(text=f"Status: Showing match {self.current_search_index + 1} of {len(self.search_results)} for '{self.search_term.get()}'.")
-        self.search_entry.focus_set()
-
+        return "break" if event else None
 
     def _focus_search_result(self, index):
-        # Focuses the treeview on the search result at the given index
+        """Scrolls to, selects, and highlights the search result at the given index."""
         if 0 <= index < len(self.search_results):
             iid = self.search_results[index]
             try:
-                # Ensure the item still exists before trying to interact with it
-                if self.tree.exists(iid):
+                if self.tree.winfo_exists() and self.tree.exists(iid):
+                    self.tree.see(iid)
                     self.tree.selection_set(iid) # Select the item
-                    self.tree.see(iid) # Scroll the item into view
+
+                    # If not find all, only highlight the current one
+                    if not self._last_search_was_findall:
+                        self._clear_search_highlight() # Clear previous single highlight
+                        current_tags = list(self.tree.item(iid, "tags"))
+                        if SEARCH_HIGHLIGHT_TAG not in current_tags:
+                             self.tree.item(iid, tags=current_tags + [SEARCH_HIGHLIGHT_TAG])
             except tk.TclError:
-                print(f"Warning: Could not focus search result - item {iid} may no longer exist.")
+                print(f"Warning: Could not focus search result - TclError for item {iid}.")
             except Exception as e:
                 print(f"Error focusing search result {iid}: {e}")
 
     def _clear_search_highlight(self):
-        # Removes the search highlight tag from all items that might have it
-        # This is more efficient than iterating through all tree items if search_results is large
-        items_to_check = self.search_results # Only need to check previous results
-        for iid in items_to_check:
-            try:
-                 if not self.tree.exists(iid): continue # Skip if item deleted
-                 current_tags = list(self.tree.item(iid, "tags"))
-                 if SEARCH_HIGHLIGHT_TAG in current_tags:
-                     current_tags.remove(SEARCH_HIGHLIGHT_TAG)
-                     self.tree.item(iid, tags=current_tags)
-            except tk.TclError: pass # Ignore errors if item vanishes during process
-            except Exception as e: print(f"Error clearing highlight for {iid}: {e}")
+        """Removes the search highlight tag from all items that have it."""
+        if not self.tree.winfo_exists(): return
+        try:
+            items_with_tag = self.tree.tag_has(SEARCH_HIGHLIGHT_TAG)
+            for iid in items_with_tag:
+                 try:
+                     if not self.tree.exists(iid): continue
+                     current_tags = list(self.tree.item(iid, "tags"))
+                     if SEARCH_HIGHLIGHT_TAG in current_tags:
+                         current_tags.remove(SEARCH_HIGHLIGHT_TAG)
+                         self.tree.item(iid, tags=current_tags)
+                 except tk.TclError: pass # Ignore if item vanished mid-operation
+                 except Exception as e: print(f"Error clearing highlight tag for {iid}: {e}")
+        except tk.TclError: pass # Ignore if tree is gone
 
     def _clear_search(self, event=None):
-        self._destroy_edit_entry() # Finish edits
-        if self.search_term.get(): self.search_term.set("") # Clear search box only if needed
-        self._clear_search_highlight() # Remove highlights
-        self.search_results = [] # Clear results list
-        self.current_search_index = -1 # Reset index
+        """Clears search results, highlights, and resets state."""
+        self._destroy_edit_entry() # Ensure edit isn't active
+        self._clear_search_highlight()
+        self.search_results = []
+        self.current_search_index = -1
+        self._last_search_was_findall = False
+        self._update_search_replace_button_states()
+        if self.tree.winfo_exists(): # Check if tree still exists
+             try: self.tree.selection_set([]) # Clear selection
+             except tk.TclError: pass # Ignore if tree is gone
 
-        # Reset status label to reflect general loaded state
+        # Update status bar to reflect loaded state
         if self.file_data:
-             segment_count = len(self.item_id_map)
+             item_count = len(self.item_id_map)
              loaded_file_count = len(self.file_data)
-             self.status_label.config(text=f"Status: Loaded {loaded_file_count} files | {segment_count} segments.")
-             # Note: Info about line number errors is lost here; could persist if needed
+             self.status_label.config(text=f"Status: Loaded {loaded_file_count} files | {item_count} items.")
         else:
-            # If no data loaded (e.g., initial state or after clearing input)
-            self.status_label.config(text="Status: Select input folder.")
+             if not self.input_folder.get():
+                  self.status_label.config(text="Status: Select input folder.")
+             else:
+                  self.status_label.config(text="Status: Ready.")
 
-        self.tree.selection_set([]) # Clear treeview selection
+    def _replace_current(self, event=None):
+        """Replaces the currently selected search match."""
+        self._destroy_edit_entry() # Ensure edit isn't active
+        if not self.search_results or self.current_search_index < 0:
+            messagebox.showinfo("Replace", "No active search result selected. Use Find first.", parent=self.root)
+            return
 
+        iid = self.search_results[self.current_search_index]
+        search_term = self.search_term.get()
+        replace_term_val = self.replace_term.get()
 
-    # --- Copy/Cut/Paste Logic ---
-    def _show_context_menu(self, event):
-        # Shows the right-click context menu
-        self._destroy_edit_entry() # Finish any active edit first
-        iid = self.tree.identify_row(event.y) # Identify item clicked on
+        if not search_term:
+            messagebox.showwarning("Replace Error", "Search term is empty.", parent=self.root)
+            return
 
-        if iid:
-            # Only show menu if a valid item (not empty space) is clicked
-            self.tree.selection_set(iid) # Select the clicked item
-            # Optional: self.tree.focus_set() # Give tree focus for keyboard nav
+        try:
+            if not self.tree.winfo_exists() or not self.tree.exists(iid):
+                 print(f"Warning: Item {iid} for replacement no longer exists.")
+                 self._remove_result_and_advance(self.current_search_index)
+                 return
 
-            # Determine if the clicked item is a data row (editable segment)
-            is_data_row = iid in self.item_id_map
+            current_text = self.tree.set(iid, DIALOGUE_COLUMN_ID)
+            search_term_lower = search_term.lower()
+            current_text_lower = current_text.lower()
+            match_index = current_text_lower.find(search_term_lower)
 
-            # Check if pasting is possible (clipboard contains text)
-            can_paste = False
-            if is_data_row: # Can only paste into data rows
+            if match_index != -1:
+                # Perform case-preserving replacement if possible (simple first match replace)
+                # This uses the original case search term length for slicing
+                new_text = current_text[:match_index] + replace_term_val + current_text[match_index + len(search_term):]
+
+                # Update data, tree, and log undo
+                if self._update_tree_and_data(iid, new_text):
+                    # Check if the replacement removed the term or if it still exists (e.g., replacing 'a' with 'aa')
+                    if search_term_lower not in new_text.lower():
+                        # Term gone, remove from results and advance
+                        self._remove_result_and_advance(self.current_search_index)
+                    else:
+                         # Term still present, update status but stay on item
+                         self.status_label.config(text=f"Status: Replaced. Item still contains term. Match {self.current_search_index + 1} of {len(self.search_results)}.")
+                         self._focus_search_result(self.current_search_index) # Re-focus/highlight
+                else:
+                     # Update failed, likely internal error shown by _update_tree_and_data
+                     print(f"Warning: Replacement failed for item {iid} due to update error.")
+                     # Maybe advance anyway? Or keep selection? Keep for now.
+                     self.status_label.config(text=f"Status: Replace failed for current item.")
+            else:
+                 # Term not found in current text (maybe changed by another action?)
+                 print(f"Warning: Search term '{search_term}' not found in selected item {iid} text '{current_text}'. Advancing.")
+                 self._remove_result_and_advance(self.current_search_index, advance_only=True) # Advance without removing
+
+        except tk.TclError as e:
+             print(f"Error during replace operation for {iid}: {e}")
+             messagebox.showerror("Replace Error", f"A TclError occurred replacing text in item {iid}:\n{e}", parent=self.root)
+        except Exception as e:
+             print(f"Unexpected error during replace for {iid}: {e}")
+             traceback.print_exc()
+             messagebox.showerror("Replace Error", f"An unexpected error occurred:\n{e}", parent=self.root)
+        finally:
+            self._update_search_replace_button_states() # Update buttons based on remaining results
+
+    def _remove_result_and_advance(self, index_to_remove, advance_only=False):
+        """Helper to remove a result and navigate appropriately."""
+        if not self.search_results: return
+
+        iid_removed = None
+        if not advance_only and 0 <= index_to_remove < len(self.search_results):
+             # Remove the item from the results list
+             iid_removed = self.search_results.pop(index_to_remove)
+             # If Find All was used, remove the highlight from the removed item
+             if self._last_search_was_findall and iid_removed:
                 try:
-                    clipboard_content = self.root.clipboard_get()
-                    # Allow pasting empty string, check if it's actually string data
-                    if isinstance(clipboard_content, str):
-                        can_paste = True
-                except tk.TclError:
-                    # clipboard_get() raises TclError if clipboard is empty or contains non-text data
-                    can_paste = False
+                    if self.tree.winfo_exists() and self.tree.exists(iid_removed):
+                        current_tags = list(self.tree.item(iid_removed, "tags"))
+                        if SEARCH_HIGHLIGHT_TAG in current_tags:
+                            current_tags.remove(SEARCH_HIGHLIGHT_TAG)
+                            self.tree.item(iid_removed, tags=current_tags)
+                except tk.TclError: pass # Ignore if item vanished
 
-            # Apply theme colors to context menu just before posting
-            colors = THEMES.get(self.current_theme.get(), THEMES["Light"])
-            self.context_menu.config(bg=colors["menu_bg"], fg=colors["menu_fg"],
-                                     activebackground=colors["menu_active_bg"],
-                                     activeforeground=colors["menu_active_fg"],
-                                     activeborderwidth=0, bd=0)
+        # Check if results remain
+        if not self.search_results:
+            # No results left, clear search state
+            self.current_search_index = -1
+            self._clear_search_highlight() # Should be empty anyway, but be sure
+            term = self.search_term.get()
+            self.status_label.config(text=f"Status: Replaced last match for '{term}'. No more matches.")
+        else:
+            # Results remain, adjust index and focus
+            # Ensure the index wraps around correctly after removal
+            self.current_search_index = index_to_remove % len(self.search_results)
+            self._focus_search_result(self.current_search_index)
+            self.status_label.config(text=f"Status: Replaced match. {len(self.search_results)} remaining. Showing match {self.current_search_index + 1}.")
 
-            # Enable/disable menu items based on context
-            self.context_menu.entryconfig("Copy", state=tk.NORMAL if is_data_row else tk.DISABLED)
-            self.context_menu.entryconfig("Cut", state=tk.NORMAL if is_data_row else tk.DISABLED)
-            self.context_menu.entryconfig("Paste", state=tk.NORMAL if can_paste else tk.DISABLED)
+        self._update_search_replace_button_states()
 
-            # Display the menu at the cursor position
-            self.context_menu.post(event.x_root, event.y_root)
-        # else: Do nothing if the click was not on an item
+    def _replace_all(self, event=None):
+        """Replaces all occurrences in all currently found search results."""
+        self._destroy_edit_entry() # Ensure edit isn't active
+        search_term_val = self.search_term.get()
+        replace_term_val = self.replace_term.get()
 
+        if not search_term_val:
+            messagebox.showwarning("Replace Error", "Search term is empty.", parent=self.root)
+            return
+        if not self.search_results:
+            messagebox.showinfo("Replace All", "No search results to replace. Use Find or Find All first.", parent=self.root)
+            return
+
+        # Process a copy of the results, as the list might change during iteration if needed (though current logic doesn't)
+        items_to_process = list(self.search_results)
+
+        confirm = messagebox.askyesno(
+            "Confirm Replace All",
+            f"Replace ALL occurrences of '{search_term_val}' with '{replace_term_val}'\n"
+            f"in {len(items_to_process)} currently found item(s)?\n\n"
+            "(This action can be undone as a single step.)",
+            parent=self.root
+        )
+        if not confirm: return
+
+        count = 0
+        errors = 0
+        # For compound undo: Store initial and final states for changed items
+        initial_states = {} # {iid: original_text}
+        final_states = {}   # {iid: new_text}
+
+        try:
+            # Use regex for replacement to handle multiple occurrences within a single item easily
+            # re.escape ensures literal matching of the search term
+            regex = re.compile(re.escape(search_term_val), re.IGNORECASE)
+        except re.error as e:
+             messagebox.showerror("Regex Error", f"Invalid search term for replacement: {e}", parent=self.root)
+             return
+
+        # --- Phase 1: Prepare Undo Data & Identify changes ---
+        self.status_label.config(text="Status: Preparing Replace All...")
+        self.root.update_idletasks()
+        for iid in items_to_process:
+             try:
+                 if not self.tree.winfo_exists() or not self.tree.exists(iid) or iid not in self.item_id_map: continue
+                 current_text = self.tree.set(iid, DIALOGUE_COLUMN_ID)
+                 # Preview the replacement
+                 new_text_preview = regex.sub(replace_term_val, current_text)
+                 if new_text_preview != current_text:
+                     # Only store if a change will actually occur
+                     initial_states[iid] = current_text
+                     final_states[iid] = new_text_preview # Store the target state
+             except tk.TclError: errors += 1; print(f"Warning: TclError pre-checking replace all for {iid}")
+             except Exception as e: print(f"Error pre-checking item {iid}: {e}"); errors += 1
+
+        if not initial_states:
+             # No items actually needed changing from the current results
+             messagebox.showinfo("Replace All", "No occurrences found needing replacement in the current results.", parent=self.root)
+             self._clear_search() # Clear results as nothing was done
+             return
+
+        # --- Phase 2: Perform Replacements ---
+        self.status_label.config(text=f"Status: Performing Replace All on {len(initial_states)} items...")
+        self.root.update_idletasks()
+
+        # Use the pre-calculated final states
+        restored_states_for_undo = {} # Store the actual initial states for undo
+        for iid, new_text in final_states.items():
+            original_text = initial_states.get(iid)
+            if original_text is None: continue # Should not happen based on Phase 1
+
+            restored_states_for_undo[iid] = original_text # Store original for undo
+
+            # Perform the update, marking it as part of undo/redo sequence
+            # to avoid individual undo steps for each replacement
+            if self._update_tree_and_data(iid, new_text, is_undo_redo=True):
+                 count += 1
+            else:
+                 errors += 1
+                 # If update failed, the item remains in its initial state
+                 # Keep `original_text` in restored_states_for_undo
+                 # Keep `new_text` in final_states (this represents the *attempted* state)
+
+        # --- Phase 3: Finalize ---
+        if count > 0: # Only add undo step if something actually changed successfully
+            # Add a single compound action to the undo stack
+            self.undo_stack.append({'type': 'replace_all', 'initial_states': restored_states_for_undo, 'final_states': final_states})
+            self.redo_stack.clear() # Clear redo on new action
+            self._update_undo_redo_state()
+
+        self._clear_search() # Clear search highlights and results after operation
+
+        # Report results
+        status_msg = f"Status: Replace All finished. Replaced in {count} item(s)."
+        info_msg = f"Replace All complete.\n\nReplaced text in {count} item(s)."
+        if errors > 0:
+             status_msg += f" Encountered {errors} error(s)."
+             info_msg += f"\nEncountered {errors} error(s) during update (check console)."
+             messagebox.showwarning("Replace All Complete with Issues", info_msg, parent=self.root)
+        elif count > 0 :
+             messagebox.showinfo("Replace All Complete", info_msg, parent=self.root)
+        elif initial_states and count == 0: # Means we identified changes but all updates failed
+             status_msg = f"Status: Replace All failed. Encountered {errors} error(s). No changes made."
+             info_msg = f"Replace All failed.\n\nEncountered {errors} error(s). No changes were successfully made."
+             messagebox.showerror("Replace All Failed", info_msg, parent=self.root)
+        # If initial_states was empty, we already returned earlier.
+
+        self.status_label.config(text=status_msg)
+
+
+    # --- Undo/Redo Logic ---
+    def _update_undo_redo_state(self):
+        """Updates the state of Undo/Redo menu items and context menu items."""
+        undo_state = tk.NORMAL if self.undo_stack else tk.DISABLED
+        redo_state = tk.NORMAL if self.redo_stack else tk.DISABLED
+        try:
+            # Main Edit Menu
+            if hasattr(self, 'edit_menu'):
+                undo_menu_index = self.edit_menu.index("Undo")
+                if undo_menu_index is not None and undo_menu_index != tk.NONE: self.edit_menu.entryconfigure(undo_menu_index, state=undo_state)
+                redo_menu_index = self.edit_menu.index("Redo")
+                if redo_menu_index is not None and redo_menu_index != tk.NONE: self.edit_menu.entryconfigure(redo_menu_index, state=redo_state)
+
+            # Entry Context Menu
+            if hasattr(self, 'entry_context_menu'):
+                self.entry_context_menu.entryconfig("Undo", state=undo_state)
+                self.entry_context_menu.entryconfig("Redo", state=redo_state)
+        except (tk.TclError, AttributeError):
+             pass # Ignore if menus aren't fully ready
+
+    def _clear_undo_redo(self):
+        """Clears the undo and redo stacks and updates menu states."""
+        self.undo_stack.clear()
+        self.redo_stack.clear()
+        self._update_undo_redo_state()
+
+    def _undo_action(self, event=None):
+        """Performs the Undo action."""
+        if not self.undo_stack: return "break" if event else None
+        self._destroy_edit_entry() # Ensure edit isn't active
+        action = self.undo_stack.pop()
+        action_type = action.get('type', 'single') # Default to single item edit
+        success = True
+        first_iid = None # To focus after undo/redo
+
+        try:
+            if action_type in ['replace_all', 'import_text']:
+                # Compound action: Restore multiple initial states
+                initial_states = action.get('initial_states', {}) # State BEFORE the original action
+                final_states = action.get('final_states', {})     # State AFTER the original action (needed for redo)
+                if not initial_states: success = False; print("Error: Undo data missing initial states.")
+                else:
+                    affected_iids = list(initial_states.keys())
+                    if affected_iids: first_iid = affected_iids[0]
+                    restored_states_for_redo = {} # Track what we actually put back for redo
+                    failed_iids = []
+                    for iid, old_value in initial_states.items():
+                        # Store the value *before* undoing (the final state) for redo
+                        current_value_before_undo = final_states.get(iid, None) # Get the state we are undoing from
+                        if current_value_before_undo is None: print(f"Warning: Missing final state for {iid} in undo action.")
+
+                        restored_states_for_redo[iid] = current_value_before_undo # Store for redo
+
+                        # Perform the update back to the old value
+                        if not self._update_tree_and_data(iid, old_value, is_undo_redo=True):
+                            success = False; failed_iids.append(iid)
+                            # If undo failed, redo should restore to *this* failed state
+                            # So restored_states_for_redo[iid] is still correct as the value before *attempted* undo
+
+                    # Push to redo stack only if overall operation seemed valid
+                    # The redo stack needs the states *before* the original operation (initial_states)
+                    # and the states *after* the original operation (which we stored in restored_states_for_redo).
+                    if initial_states:
+                         self.redo_stack.append({'type': action_type, 'initial_states': initial_states, 'final_states': restored_states_for_redo})
+                    if failed_iids: messagebox.showerror("Undo Error", f"Errors undoing {action_type} for: {', '.join(failed_iids)}.", parent=self.root)
+
+
+            elif action_type == 'single' and 'iid' in action:
+                # Single item edit
+                iid = action['iid']; old_value = action['old_value']; new_value = action['new_value']
+                first_iid = iid
+                # Perform update back to old value
+                if self._update_tree_and_data(iid, old_value, is_undo_redo=True):
+                    # Push original action details to redo stack
+                    self.redo_stack.append({'type': 'single', 'iid': iid, 'old_value': old_value, 'new_value': new_value})
+                else:
+                    # Update failed, don't add to redo stack
+                    success = False
+                    messagebox.showerror("Undo Error", f"Could not undo change for item {iid}.", parent=self.root)
+            else:
+                print(f"Error: Unknown or invalid undo action type: {action}")
+                success = False
+
+        except Exception as e:
+            print(f"Unexpected error during Undo: {e}"); traceback.print_exc()
+            success = False
+            self.redo_stack.clear() # Clear redo if unexpected error occurs
+
+        self._update_undo_redo_state()
+        # Try to focus the first affected item for context
+        if first_iid and self.tree.winfo_exists() and self.tree.exists(first_iid):
+             try: self.tree.see(first_iid); self.tree.selection_set(first_iid)
+             except tk.TclError: pass
+        return "break" if event else None
+
+    def _redo_action(self, event=None):
+        """Performs the Redo action."""
+        if not self.redo_stack: return "break" if event else None
+        self._destroy_edit_entry() # Ensure edit isn't active
+        action = self.redo_stack.pop()
+        action_type = action.get('type', 'single') # Default to single item edit
+        success = True
+        first_iid = None # To focus after undo/redo
+
+        try:
+            if action_type in ['replace_all', 'import_text']:
+                # Compound action: Restore multiple final states
+                initial_states = action.get('initial_states', {}) # State BEFORE the original action (needed for undo)
+                final_states = action.get('final_states', {})     # State AFTER the original action
+                if not final_states: success = False; print("Error: Redo data missing final states.")
+                else:
+                    affected_iids = list(final_states.keys())
+                    if affected_iids: first_iid = affected_iids[0]
+                    restored_states_for_undo = {} # Track what we actually put back for undo
+                    failed_iids = []
+                    for iid, new_value in final_states.items():
+                         # Store the value *before* redoing (the initial state) for undo
+                         current_value_before_redo = initial_states.get(iid, None) # Get the state we are redoing from
+                         if current_value_before_redo is None: print(f"Warning: Missing initial state for {iid} in redo action.")
+
+                         restored_states_for_undo[iid] = current_value_before_redo # Store for undo
+
+                         # Perform the update forward to the new value
+                         if not self._update_tree_and_data(iid, new_value, is_undo_redo=True):
+                             success = False; failed_iids.append(iid)
+                             # If redo failed, undo should restore to *this* failed state
+                             # So restored_states_for_undo[iid] is still correct as the value before *attempted* redo
+
+                    # Push to undo stack only if overall operation seemed valid
+                    # The undo stack needs the states *before* this redo (which we stored in restored_states_for_undo)
+                    # and the states *after* this redo (final_states).
+                    if final_states:
+                         self.undo_stack.append({'type': action_type, 'initial_states': restored_states_for_undo, 'final_states': final_states})
+                    if failed_iids: messagebox.showerror("Redo Error", f"Errors redoing {action_type} for: {', '.join(failed_iids)}.", parent=self.root)
+
+
+            elif action_type == 'single' and 'iid' in action:
+                # Single item edit
+                iid = action['iid']; old_value = action['old_value']; new_value = action['new_value']
+                first_iid = iid
+                # Perform update forward to new value
+                if self._update_tree_and_data(iid, new_value, is_undo_redo=True):
+                    # Push original action details back to undo stack
+                    self.undo_stack.append({'type': 'single', 'iid': iid, 'old_value': old_value, 'new_value': new_value})
+                else:
+                    # Update failed, don't add back to undo stack
+                    success = False
+                    messagebox.showerror("Redo Error", f"Could not redo change for item {iid}.", parent=self.root)
+            else:
+                print(f"Error: Unknown or invalid redo action type: {action}")
+                success = False
+
+        except Exception as e:
+            print(f"Unexpected error during Redo: {e}"); traceback.print_exc()
+            success = False
+            self.undo_stack.clear() # Clear undo if unexpected error occurs
+
+        self._update_undo_redo_state()
+        # Try to focus the first affected item for context
+        if first_iid and self.tree.winfo_exists() and self.tree.exists(first_iid):
+             try: self.tree.see(first_iid); self.tree.selection_set(first_iid)
+             except tk.TclError: pass
+        return "break" if event else None
+
+
+    # --- Entry Context Menu ---
+    def _show_entry_context_menu(self, event):
+        """Displays the context menu for Entry widgets (Search, Replace, Tree Edit)."""
+        widget = event.widget
+        if not isinstance(widget, (ttk.Entry, tk.Entry)): return # Handle both tk and ttk Entry
+
+        # Apply theme colors
+        colors = THEMES.get(self.current_theme.get(), THEMES["Red/Dark"])
+        bg = colors.get("entry_context_bg", colors["menu_bg"])
+        fg = colors.get("entry_context_fg", colors["menu_fg"])
+        active_bg = colors.get("entry_context_active_bg", colors["menu_active_bg"])
+        active_fg = colors.get("entry_context_active_fg", colors["menu_active_fg"])
+        try: self.entry_context_menu.config(bg=bg, fg=fg, activebackground=active_bg, activeforeground=active_fg)
+        except tk.TclError as e: print(f"Warning: Could not apply theme to entry context menu: {e}")
+
+        # Enable/Disable based on selection/clipboard/undo state
+        can_cut_copy = False
+        try:
+            if widget.selection_present(): can_cut_copy = True
+        except tk.TclError: pass # Widget might not support selection_present
+
+        can_paste = False
+        try:
+            clipboard_content = self.root.clipboard_get()
+            if isinstance(clipboard_content, str) and clipboard_content: can_paste = True
+        except tk.TclError: can_paste = False # Clipboard empty or inaccessible
+
+        # Check if the widget supports standard events (most do)
+        is_editable = widget.cget("state") != tk.DISABLED and widget.cget("state") != 'readonly'
+
+        # Use general undo/redo state, not widget-specific
+        undo_state = tk.NORMAL if self.undo_stack else tk.DISABLED
+        redo_state = tk.NORMAL if self.redo_stack else tk.DISABLED
+
+        self.entry_context_menu.entryconfig("Undo", state=undo_state)
+        self.entry_context_menu.entryconfig("Redo", state=redo_state)
+        self.entry_context_menu.entryconfig("Cut", state=tk.NORMAL if can_cut_copy and is_editable else tk.DISABLED)
+        self.entry_context_menu.entryconfig("Copy", state=tk.NORMAL if can_cut_copy else tk.DISABLED)
+        self.entry_context_menu.entryconfig("Paste", state=tk.NORMAL if can_paste and is_editable else tk.DISABLED)
+
+        # Popup the menu
+        self.entry_context_menu.tk_popup(event.x_root, event.y_root)
+
+    def _entry_action(self, widget, action):
+        """Performs standard clipboard actions (Cut, Copy, Paste) on the given widget."""
+        if widget and isinstance(widget, (ttk.Entry, tk.Entry)):
+            try:
+                # Generate standard Tk events
+                widget.event_generate(f'<<{action}>>')
+            except tk.TclError as e:
+                print(f"Error performing entry action '{action}': {e}")
+
+    # --- Treeview Context Menu & Copy/Cut/Paste Logic ---
+    def _show_tree_context_menu(self, event):
+        """Shows the context menu for the Treeview."""
+        iid_under_cursor = self.tree.identify_row(event.y)
+
+        # If editing, save edit before showing menu if cursor moved off edited item
+        if self.edit_entry and iid_under_cursor != self.edit_item_id:
+             if self.edit_item_id and self.tree.exists(self.edit_item_id):
+                 self._save_edit(self.edit_item_id, DIALOGUE_COLUMN_ID)
+             else:
+                 self._destroy_edit_entry()
+
+        if not iid_under_cursor: return # Clicked outside rows
+
+        # Select the row under the cursor for context
+        if self.tree.winfo_exists(): self.tree.selection_set(iid_under_cursor)
+
+        # Check if it's an actual data row (vs header/separator)
+        is_data_row = iid_under_cursor in self.item_id_map
+
+        # Check if paste is possible
+        can_paste = False
+        if is_data_row:
+            try:
+                clipboard_content = self.root.clipboard_get()
+                if isinstance(clipboard_content, str): can_paste = True
+            except tk.TclError: can_paste = False # Clipboard empty or invalid
+
+        # Apply theme colors
+        colors = THEMES.get(self.current_theme.get(), THEMES["Red/Dark"])
+        try: self.tree_context_menu.config(bg=colors["menu_bg"], fg=colors["menu_fg"], activebackground=colors["menu_active_bg"], activeforeground=colors["menu_active_fg"])
+        except tk.TclError as e: print(f"Warning: Could not apply theme to tree context menu: {e}")
+
+        # Enable/Disable menu items
+        self.tree_context_menu.entryconfig("Copy", state=tk.NORMAL if is_data_row else tk.DISABLED)
+        self.tree_context_menu.entryconfig("Cut", state=tk.NORMAL if is_data_row else tk.DISABLED)
+        self.tree_context_menu.entryconfig("Paste", state=tk.NORMAL if can_paste else tk.DISABLED) # Paste enabled only if data row & clipboard has text
+
+        # Show the menu
+        self.tree_context_menu.post(event.x_root, event.y_root)
 
     def _copy_selection(self, event=None):
-        # Copies the dialogue text of the selected item to the clipboard
+        """Copies the text from the selected Treeview row(s)."""
+        if not self.tree.winfo_exists(): return "break" if event else None
         selected_items = self.tree.selection()
-        if not selected_items: return "break" # No item selected
-        iid = selected_items[0] # Get the first selected item
+        if not selected_items: return "break" if event else None
+        iid = selected_items[0] # Copy first selected item only
 
-        # Check if the selected item is a data row
-        if iid in self.item_id_map:
+        if iid in self.item_id_map: # Check if it's a data row
             try:
-                # Ensure item exists before getting text
                 if self.tree.exists(iid):
                     dialogue_text = self.tree.set(iid, DIALOGUE_COLUMN_ID)
-                    self.root.clipboard_clear() # Clear previous clipboard content
-                    self.root.clipboard_append(dialogue_text) # Add new text
-                else:
-                    print(f"Warning: Could not copy from item {iid}, it no longer exists.")
-
-            except tk.TclError: # Handle case where item might disappear between checks
-                print(f"Warning: TclError during copy for item {iid}.")
-            except Exception as e:
-                 print(f"Error during copy for {iid}: {e}")
-                 messagebox.showerror("Copy Error", f"Could not copy text:\n{e}")
-        return "break" # Prevent default text widget copy behavior if applicable
+                    self.root.clipboard_clear()
+                    self.root.clipboard_append(dialogue_text)
+                else: print(f"Warning: Could not copy from non-existent item {iid}.")
+            except tk.TclError as e: print(f"Warning: TclError during copy for item {iid}: {e}")
+            except Exception as e: print(f"Error during copy for {iid}: {e}"); messagebox.showerror("Copy Error", f"Could not copy text:\n{e}", parent=self.root)
+        else:
+            print(f"Info: Cannot copy from non-data row {iid}")
+        return "break" if event else None # Prevent default binding if applicable
 
     def _cut_selection(self, event=None):
-        # Cuts the dialogue text (copy + clear)
+        """Copies the text from the selected row and clears it."""
+        if not self.tree.winfo_exists(): return "break" if event else None
         selected_items = self.tree.selection()
-        if not selected_items: return "break"
-        iid = selected_items[0]
+        if not selected_items: return "break" if event else None
+        iid = selected_items[0] # Cut first selected item only
 
-        if iid in self.item_id_map: # Only cut from data rows
+        if iid in self.item_id_map: # Check if it's a data row
             try:
-                # 1. Copy the text
-                if not self.tree.exists(iid): # Check existence first
-                    print(f"Warning: Could not cut item {iid}, it no longer exists.")
-                    return "break"
+                if not self.tree.exists(iid): return "break" if event else None
                 dialogue_text = self.tree.set(iid, DIALOGUE_COLUMN_ID)
+                # Copy to clipboard first
                 self.root.clipboard_clear()
                 self.root.clipboard_append(dialogue_text)
-
-                # 2. Clear the text in the Treeview
-                self.tree.set(iid, DIALOGUE_COLUMN_ID, "") # Set empty string
-
-                # 3. Clear the text in the backend data structure
-                map_info = self.item_id_map[iid]
-                file_idx = map_info.get("file_index")
-                string_info_idx = map_info.get("string_info_index")
-                seg_idx = map_info.get("segment_index")
-
-                # Robust check of data structure before modification
-                if not (isinstance(file_idx, int) and
-                        isinstance(string_info_idx, int) and
-                        isinstance(seg_idx, int)):
-                     raise ValueError("Corrupt map info during cut.")
-
-                if not (0 <= file_idx < len(self.file_data) and
-                        isinstance(self.file_data[file_idx].get("en_strings"), list) and
-                        0 <= string_info_idx < len(self.file_data[file_idx]["en_strings"]) and
-                        isinstance(self.file_data[file_idx]["en_strings"][string_info_idx].get("segments"), list) and
-                        0 <= seg_idx < len(self.file_data[file_idx]["en_strings"][string_info_idx]["segments"]) and
-                        isinstance(self.file_data[file_idx]["en_strings"][string_info_idx]["segments"][seg_idx], dict)):
-                     raise IndexError("Data structure integrity compromised during cut.")
-
-                # Update the data store
-                self.file_data[file_idx]["en_strings"][string_info_idx]["segments"][seg_idx]["text"] = ""
-
-            except (IndexError, KeyError, TypeError, ValueError) as e:
-                 print(f"Error updating data during cut for {iid}: {e}")
-                 messagebox.showerror("Cut Error", f"Could not update data structure during cut:\n{e}")
-                 # Optionally revert treeview change if data update failed:
-                 try:
-                     if self.tree.exists(iid):
-                         self.tree.set(iid, DIALOGUE_COLUMN_ID, dialogue_text)
-                 except tk.TclError: pass # Item might be gone anyway
-            except tk.TclError: # Handle case where item might disappear
-                 print(f"Warning: TclError during cut for item {iid}.")
-            except Exception as e:
-                 print(f"Error during cut for {iid}: {e}")
-                 messagebox.showerror("Cut Error", f"Could not cut text:\n{e}")
-        return "break"
+                # Then clear the text in the tree/data (logs undo)
+                if not self._update_tree_and_data(iid, ""):
+                     print(f"Warning: Cut failed for {iid} because update failed. Clearing clipboard.")
+                     self.root.clipboard_clear() # Clear clipboard if update failed
+            except tk.TclError as e: print(f"Warning: TclError during cut for item {iid}: {e}"); self.root.clipboard_clear()
+            except Exception as e: print(f"Error during cut for {iid}: {e}"); messagebox.showerror("Cut Error", f"Could not cut text:\n{e}", parent=self.root); self.root.clipboard_clear()
+        else:
+            print(f"Info: Cannot cut non-data row {iid}")
+        return "break" if event else None # Prevent default binding if applicable
 
     def _paste_selection(self, event=None):
-        # Pastes clipboard text into the selected data row
+        """Pastes text from the clipboard into the selected Treeview dialogue cell."""
+        if not self.tree.winfo_exists(): return "break" if event else None
         selected_items = self.tree.selection()
-        if not selected_items: return "break"
-        iid = selected_items[0]
+        if not selected_items: return "break" if event else None
+        iid = selected_items[0] # Paste into first selected item only
 
-        if iid in self.item_id_map: # Only paste into data rows
+        if iid in self.item_id_map: # Check if it's a data row
             try:
-                # 1. Get clipboard text
                 clipboard_text = self.root.clipboard_get()
                 if not isinstance(clipboard_text, str):
-                    # This case should ideally be prevented by disabling Paste menu item,
-                    # but check anyway.
                     raise TypeError("Clipboard does not contain text.")
-
-                # Ensure item exists before modifying
                 if not self.tree.exists(iid):
-                    print(f"Warning: Could not paste into item {iid}, it no longer exists.")
-                    return "break"
-
-                # 2. Update Treeview display
-                self.tree.set(iid, DIALOGUE_COLUMN_ID, clipboard_text)
-
-                # 3. Update backend data structure
-                map_info = self.item_id_map[iid]
-                file_idx = map_info.get("file_index")
-                string_info_idx = map_info.get("string_info_index")
-                seg_idx = map_info.get("segment_index")
-
-                # Robust check of data structure before modification
-                if not (isinstance(file_idx, int) and
-                        isinstance(string_info_idx, int) and
-                        isinstance(seg_idx, int)):
-                     raise ValueError("Corrupt map info during paste.")
-
-                if not (0 <= file_idx < len(self.file_data) and
-                        isinstance(self.file_data[file_idx].get("en_strings"), list) and
-                        0 <= string_info_idx < len(self.file_data[file_idx]["en_strings"]) and
-                        isinstance(self.file_data[file_idx]["en_strings"][string_info_idx].get("segments"), list) and
-                        0 <= seg_idx < len(self.file_data[file_idx]["en_strings"][string_info_idx]["segments"]) and
-                        isinstance(self.file_data[file_idx]["en_strings"][string_info_idx]["segments"][seg_idx], dict)):
-                     raise IndexError("Data structure integrity compromised during paste.")
-
-                # Update the data store
-                self.file_data[file_idx]["en_strings"][string_info_idx]["segments"][seg_idx]["text"] = clipboard_text
-
-            except (IndexError, KeyError, TypeError, ValueError) as e:
-                 print(f"Error updating data during paste for {iid}: {e}")
-                 messagebox.showerror("Paste Error", f"Could not update data structure during paste:\n{e}")
-                 # Optionally revert treeview change if data update failed:
-                 # try:
-                 #     if self.tree.exists(iid):
-                 #         # Need to get the original text *before* the paste attempt from data
-                 #         original_text = self.file_data[file_idx]["en_strings"][string_info_idx]["segments"][seg_idx]["text"] # This might now hold pasted text if error was late
-                 #         # Safer: Store original text before trying paste
-                 #         # self.tree.set(iid, DIALOGUE_COLUMN_ID, original_text)
-                 # except tk.TclError: pass
-            except tk.TclError: # clipboard_get failed
-                messagebox.showwarning("Paste Error", "Clipboard is empty or does not contain text.")
+                    print(f"Warning: Cannot paste into non-existent item {iid}")
+                    return "break" if event else None
+                # Update the tree/data with clipboard content (logs undo)
+                self._update_tree_and_data(iid, clipboard_text)
+            except tk.TclError:
+                messagebox.showwarning("Paste Error", "Clipboard is empty or cannot be accessed.", parent=self.root)
+            except TypeError as e:
+                messagebox.showwarning("Paste Error", str(e), parent=self.root)
             except Exception as e:
-                print(f"Error during paste for {iid}: {e}")
-                messagebox.showerror("Paste Error", f"Could not paste text:\n{e}")
-        return "break"
+                print(f"Error during paste for {iid}: {e}"); traceback.print_exc()
+                messagebox.showerror("Paste Error", f"Could not paste text:\n{e}", parent=self.root)
+        else:
+            print(f"Info: Cannot paste into non-data row {iid}")
+        return "break" if event else None # Prevent default binding if applicable
 
 
     # --- Saving Logic ---
     def save_all_files(self):
-        # Check prerequisites
+        """Saves ALL successfully processed files to the output folder.""" # <-- Docstring updated
         output_dir = self.output_folder.get()
-        if not output_dir:
-            messagebox.showerror("Error", "Output folder is not selected.")
-            return
-        if not self.input_folder.get(): # Also need input to know what was loaded
-            messagebox.showerror("Error", "Input folder is not selected (required to know source).")
+        input_dir = self.input_folder.get()
+
+        # Pre-checks
+        if not output_dir or not input_dir:
+            messagebox.showerror("Save Error", "Input and Output folders must be selected.", parent=self.root)
             return
         if not self.file_data:
-            messagebox.showinfo("Info", "No data loaded to save.")
-            return
+             messagebox.showinfo("Save", "No data loaded to save.", parent=self.root)
+             return
 
-        # Ensure output directory exists or can be created
         p_output_dir = pathlib.Path(output_dir)
         try:
             p_output_dir.mkdir(parents=True, exist_ok=True)
-            print(f"Ensured output directory exists: {p_output_dir}")
         except OSError as e:
-            messagebox.showerror("Error", f"Output folder path is invalid or could not be created:\n{p_output_dir}\n\nError: {e}")
+            messagebox.showerror("Save Error", f"Output folder path is invalid or could not be created:\n{p_output_dir}\nError: {e}", parent=self.root)
             return
 
-        # Prevent edits during save
-        self._destroy_edit_entry()
+        # Save any pending edit before starting the save process
+        if self.edit_entry:
+            if self.edit_item_id and self.tree.exists(self.edit_item_id):
+                self._save_edit(self.edit_item_id, DIALOGUE_COLUMN_ID)
+            else:
+                self._destroy_edit_entry()
 
-        # Start saving process
-        self.status_label.config(text="Status: Saving...")
-        self.root.update_idletasks() # Show status immediately
+        self.status_label.config(text="Status: Preparing to save...")
+        self.root.update_idletasks()
+
         saved_count = 0
-        error_files = set() # Keep track of files with save errors
-        processed_count = 0
+        error_files = set()
+        # skipped_count = 0 # No longer needed as we save all
+        files_to_process = len(self.file_data)
+        something_saved_successfully = False # Flag to clear undo history
 
         try:
-            # Iterate through the loaded file data
             for file_index, entry in enumerate(self.file_data):
-                processed_count += 1
-                current_file_path = entry['path']
+                current_file_path = entry.get('path')
+                file_format = entry.get('format')
+                original_json_content = entry.get("json_content") # The structure loaded initially
+
+                # Basic validation for the entry
+                if not current_file_path or file_format == FORMAT_UNKNOWN or not isinstance(original_json_content, list):
+                     print(f"Error: Invalid data for file index {file_index} (Path: {current_file_path}, Format: {file_format}, ContentType: {type(original_json_content)}). Skipping save.")
+                     error_files.add(f"File Index {file_index} (Invalid Data)")
+                     continue
+
                 current_file_path_name = current_file_path.name
+                self.status_label.config(text=f"Status: Processing {file_index+1}/{files_to_process}: {current_file_path_name}")
+                self.root.update_idletasks()
 
-                # Make a copy of the original JSON content to modify.
-                # A shallow copy is usually fine if the structure is list[dict]
-                # and we only modify string values within the dicts.
-                # Use deepcopy if structure is more complex or modifications are deeper.
-                # json_content_to_save = copy.deepcopy(entry["json_content"])
-                original_json_content = entry["json_content"]
-                if not isinstance(original_json_content, list):
-                    print(f"Error: Expected list content for file {current_file_path_name}, found {type(original_json_content)}. Skipping file save.")
-                    error_files.add(current_file_path_name)
+                # --- Reconstruct Content ---
+                # Create a working copy of the original JSON structure.
+                try:
+                    # json_content_to_save = copy.deepcopy(original_json_content)
+                    json_content_to_save = [item.copy() if isinstance(item, (dict, list)) else item for item in original_json_content]
+                except Exception as copy_e:
+                    print(f"Error: Failed to copy content for {current_file_path_name}: {copy_e}. Skipping save.")
+                    error_files.add(f"{current_file_path_name} (Copy Error)")
                     continue
-                # Create a list of shallow copies of the dictionaries
-                json_content_to_save = [item.copy() if isinstance(item, dict) else item for item in original_json_content]
+
+                # --- Update the content based on current editor state ---
+                # This loop now just updates the json_content_to_save structure
+                # based on the data in self.file_data (edited or not).
+                for string_info in entry.get("en_strings", []):
+                    pending_save_string = None # Variable to hold the string intended for saving
+
+                    if file_format == FORMAT_DLGE:
+                        original_item_index = string_info.get("original_item_index")
+                        segments = string_info.get("segments", [])
+                        # original_string_baseline = string_info.get("original_string", None) # Baseline check removed below
+
+                        if not (isinstance(original_item_index, int) and 0 <= original_item_index < len(json_content_to_save)):
+                            print(f"Error: Invalid original item index {original_item_index} for DLGE {current_file_path_name}.")
+                            error_files.add(f"{current_file_path_name} (DLGE Bad Index)"); continue
+                        target_item = json_content_to_save[original_item_index]
+                        if not isinstance(target_item, dict) or "String" not in target_item:
+                            print(f"Warning: Structure mismatch at DLGE index {original_item_index} in {current_file_path_name}. Skipping item.")
+                            error_files.add(f"{current_file_path_name} (DLGE Struct Mismatch)"); continue
+
+                        reconstructed_parts = []
+                        valid_segments = True
+                        for segment in segments:
+                            if not isinstance(segment, dict) or "text" not in segment:
+                                print(f"Error: Invalid segment format DLGE index {original_item_index} in {current_file_path_name}."); error_files.add(f"{current_file_path_name} (Bad Segment)"); valid_segments = False; break
+                            prefix = segment.get("original_prefix", "") or ""
+                            segment_text = segment["text"]
+                            reconstructed_parts.append(prefix + segment_text)
+                        if not valid_segments: continue
+
+                        final_reconstructed_string = "".join(reconstructed_parts)
+                        target_item["String"] = final_reconstructed_string # Update the content to save
+                        pending_save_string = final_reconstructed_string # Mark for baseline update
+
+                    elif file_format == FORMAT_LOCR:
+                        lang_block_idx = string_info.get("original_lang_block_index")
+                        string_item_list_idx = string_info.get("original_string_item_index")
+                        string_hash = string_info.get("string_hash")
+                        current_text = string_info.get("text")
+                        # original_text_baseline = string_info.get("original_text", None) # Baseline check removed below
+
+                        if not (isinstance(lang_block_idx, int) and 0 <= lang_block_idx < len(json_content_to_save) and
+                                isinstance(json_content_to_save[lang_block_idx], list) and
+                                isinstance(string_item_list_idx, int) and 0 <= string_item_list_idx < len(json_content_to_save[lang_block_idx])):
+                            print(f"Error: Invalid indices ({lang_block_idx}, {string_item_list_idx}) for LOCR {current_file_path_name}.")
+                            error_files.add(f"{current_file_path_name} (LOCR Bad Index)"); continue
+
+                        target_dict = json_content_to_save[lang_block_idx][string_item_list_idx]
+                        if not (isinstance(target_dict, dict) and "String" in target_dict and target_dict.get("StringHash") == string_hash):
+                            print(f"Warning: Structure or hash mismatch at LOCR index [{lang_block_idx}][{string_item_list_idx}] in {current_file_path_name}.")
+                            error_files.add(f"{current_file_path_name} (LOCR Mismatch)"); continue
+
+                        target_dict["String"] = current_text # Update the content to save
+                        pending_save_string = current_text # Mark for baseline update
+
+                    # Store the string value intended for saving to update baseline later
+                    if pending_save_string is not None:
+                         string_info["_pending_save_value"] = pending_save_string
 
 
-                modified_in_file = False # Track if any changes were made to this file
-
-                # Iterate through the 'en' strings data we extracted for this file
-                for string_info_idx, string_info in enumerate(entry["en_strings"]):
-                    original_item_index = string_info.get("original_item_index")
-
-                    # --- Robustness Check: Ensure index is valid ---
-                    if not isinstance(original_item_index, int) or not (0 <= original_item_index < len(json_content_to_save)):
-                        print(f"Error: Invalid original item index ({original_item_index}) for file {current_file_path_name} during save prep. Skipping item update.")
-                        error_files.add(current_file_path_name)
-                        continue # Skip processing this string_info item
-
-                    target_item = json_content_to_save[original_item_index]
-
-                    # --- Robustness Check: Ensure target item is as expected ---
-                    if not (isinstance(target_item, dict) and "String" in target_item and target_item.get("Language") == "en"):
-                         print(f"Warning: Item structure at index {original_item_index} in {current_file_path_name} seems to have changed or is not 'en'. Skipping update for this item.")
-                         continue # Skip this item, but continue with others in the file
-
-                    # --- Robustness Check: Ensure segments data is valid ---
-                    if not isinstance(string_info.get("segments"), list):
-                         print(f"Error: Invalid segment structure for item index {original_item_index} in {current_file_path_name}. Skipping update for this item.")
-                         error_files.add(current_file_path_name)
-                         continue
-
-                    # Reconstruct the "String" value from potentially edited segments
-                    reconstructed_parts = []
-                    valid_segments_for_item = True
-                    for seg_idx, segment in enumerate(string_info["segments"]):
-                        # Check segment validity
-                        if not isinstance(segment, dict) or "text" not in segment:
-                            print(f"Error: Invalid segment format at index {seg_idx} for item index {original_item_index} in {current_file_path_name}. Skipping update for this item.")
-                            error_files.add(current_file_path_name)
-                            valid_segments_for_item = False
-                            break # Stop processing segments for this item
-
-                        edited_text = segment["text"]
-                        prefix = segment.get("original_prefix")
-                        reconstructed_parts.append(prefix + edited_text if prefix else edited_text)
-
-                    if not valid_segments_for_item:
-                        continue # Skip to the next string_info item if segments were invalid
-
-                    # Join the parts to get the final string
-                    final_string = "".join(reconstructed_parts)
-
-                    # Compare with the string in the copied JSON data
-                    # Use get() for safety, although we checked "String" exists earlier
-                    original_string_in_copy = target_item.get("String")
-                    if original_string_in_copy != final_string:
-                        target_item["String"] = final_string
-                        modified_in_file = True # Mark file as modified
-
-                # --- Write the file if it was modified ---
+                # --- Always Write the file to output directory ---
+                # The 'if modified_in_file:' check is removed. We always try to save.
                 output_path = p_output_dir / current_file_path_name
-                if modified_in_file:
-                    try:
-                        # Write the potentially modified json_content_to_save
-                        with open(output_path, 'w', encoding='utf-8') as f:
-                             # Use indent for readability, ensure_ascii=False for proper UTF-8 output
-                             json.dump(json_content_to_save, f, indent=4, ensure_ascii=False)
-                        saved_count += 1
-                    except IOError as e:
-                        print(f"Error writing file {output_path}: {e}")
-                        messagebox.showerror("Save Error", f"Failed to save {output_path.name}:\n{e}")
-                        error_files.add(current_file_path_name)
-                    except Exception as e:
-                        # Catch other potential errors during dump/write
-                        print(f"Unexpected error writing file {output_path}: {e}")
-                        messagebox.showerror("Save Error", f"Unexpected error saving {output_path.name}:\n{e}")
-                        error_files.add(current_file_path_name)
-                # else:
-                    # print(f"No modifications detected in {current_file_path_name}, skipping save.")
+                try:
+                    with open(output_path, 'w', encoding='utf-8') as f:
+                         json.dump(json_content_to_save, f, indent=4, ensure_ascii=False)
+                    saved_count += 1
+                    something_saved_successfully = True
 
-            # --- Final Status Update ---
-            status_text = f"Status: Processed {processed_count} files. Saved {saved_count} modified files."
+                    # --- IMPORTANT: Update internal baseline after successful save ---
+                    # This prevents the file being marked as modified again if saved immediately
+                    for string_info in entry.get("en_strings", []):
+                        if "_pending_save_value" in string_info:
+                            if file_format == FORMAT_DLGE:
+                                string_info["original_string"] = string_info["_pending_save_value"]
+                            elif file_format == FORMAT_LOCR:
+                                string_info["original_text"] = string_info["_pending_save_value"]
+                            del string_info["_pending_save_value"] # Clean up temp key
+
+                except (IOError, TypeError) as e: # Catch potential type errors during dump too
+                    print(f"Error writing file {output_path}: {e}")
+                    messagebox.showerror("Save Error", f"Failed to save {output_path.name}:\n{e}", parent=self.root)
+                    error_files.add(f"{current_file_path_name} (Write Error)")
+                    # If save failed, do NOT update the baseline, clean up temp key
+                    for string_info in entry.get("en_strings", []):
+                        if "_pending_save_value" in string_info: del string_info["_pending_save_value"]
+                except Exception as e:
+                    print(f"Unexpected error writing file {output_path}: {e}")
+                    traceback.print_exc()
+                    messagebox.showerror("Save Error", f"Unexpected error saving {output_path.name}:\n{e}", parent=self.root)
+                    error_files.add(f"{current_file_path_name} (Unexpected Write Error)")
+                    # If save failed, do NOT update the baseline, clean up temp key
+                    for string_info in entry.get("en_strings", []):
+                        if "_pending_save_value" in string_info: del string_info["_pending_save_value"]
+
+            # --- Final Status and Reporting ---
+            # Simplified message as 'skipped' is no longer relevant here
+            final_status_text = f"Status: Save complete. Saved: {saved_count}/{files_to_process}, Errors: {len(error_files)}."
+            self.status_label.config(text=final_status_text)
+
+            result_message = f"Processed {files_to_process} file(s).\nSaved {saved_count} file(s) to:\n{output_dir}"
+
             if error_files:
                 error_list_str = "\n - ".join(sorted(list(error_files)))
-                messagebox.showwarning("Save Complete with Issues",
-                                       f"Processed {processed_count} file(s).\n"
-                                       f"Saved {saved_count} modified file(s) to:\n{output_dir}\n\n"
-                                       f"Encountered issues in {len(error_files)} file(s):\n - {error_list_str}\n\n"
-                                       "(Check console log for details)")
-                status_text += f" | {len(error_files)} file(s) had issues."
-            elif saved_count > 0:
-                messagebox.showinfo("Success",
-                                    f"Processed {processed_count} file(s).\n"
-                                    f"Saved {saved_count} modified file(s) to:\n{output_dir}")
-            elif processed_count > 0:
-                 messagebox.showinfo("Save Complete",
-                                     f"Processed {processed_count} file(s).\n"
-                                     "No modifications needed saving.")
-            else: # Should not happen if save button was enabled, but handle anyway
-                 messagebox.showinfo("Save Complete", "No files were processed.")
+                messagebox.showwarning("Save Complete with Issues", f"{result_message}\n\nEncountered issues saving or processing {len(error_files)} file(s):\n - {error_list_str}\n(Check console log)", parent=self.root)
+            else:
+                 # Only show success if no errors
+                 messagebox.showinfo("Save Successful", result_message, parent=self.root)
 
-            self.status_label.config(text=status_text)
+            # Clear undo history if at least one file was saved successfully
+            if something_saved_successfully:
+                self._clear_undo_redo()
+                print("Undo/Redo history cleared after successful save.")
 
         except Exception as e:
-            # Catch critical errors during the overall save loop
-            messagebox.showerror("Critical Error", f"A critical error occurred during the saving process: {e}")
+            messagebox.showerror("Critical Save Error", f"A critical error occurred during the saving process: {e}", parent=self.root)
             self.status_label.config(text=f"Status: Critical error during save - {e}")
-            print(f"Saving Process Error: {e}")
-            import traceback; traceback.print_exc()
-        finally:
-             # Update save button state (might be disabled if errors occurred,
-             # or if input/output folders changed during save?) - usually remains enabled.
-             self._update_save_state()
+            print(f"Saving Process Error: {e}"); traceback.print_exc()
 
+
+    # --- Text Export/Import ---
+    def _export_dialogue(self):
+        """Exports text from the treeview to a TSV file."""
+        if not self.file_data or not self.item_id_map:
+             messagebox.showwarning("Export Error", "No data loaded to export.", parent=self.root)
+             return
+
+        input_path = pathlib.Path(self.input_folder.get())
+        default_filename = f"{input_path.name}_export.tsv" if input_path.name else "dialogue_export.tsv"
+        initial_dir = self.output_folder.get() or self.input_folder.get() or str(pathlib.Path.home())
+        export_path = filedialog.asksaveasfilename(
+            title="Export Text As", initialdir=initial_dir, initialfile=default_filename,
+            defaultextension=".tsv", filetypes=[("Tab Separated Values", "*.tsv"), ("All Files", "*.*")],
+            parent=self.root
+        )
+        if not export_path: return
+
+        exported_count = 0; errors = 0
+        try:
+            with open(export_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f, delimiter='\t', quoting=csv.QUOTE_MINIMAL, lineterminator='\n')
+                # Header row
+                writer.writerow(['# TreeItemID', 'DialogueText'])
+                # Metadata comments
+                f.write(f'# ExportedFromAppVersion: {APP_VERSION}\n')
+                f.write(f'# SourceInputFolder: {self.input_folder.get()}\n')
+
+                # Get editable items in current tree order
+                all_iids_in_order = []
+                if self.tree.winfo_exists(): all_iids_in_order = self.tree.get_children('')
+                editable_iids = [iid for iid in all_iids_in_order if iid in self.item_id_map]
+
+                for iid in editable_iids:
+                    try:
+                        if self.tree.exists(iid):
+                            dialogue_text = self.tree.set(iid, DIALOGUE_COLUMN_ID)
+                            # Write IID and Text, separated by tab
+                            writer.writerow([iid, dialogue_text])
+                            exported_count += 1
+                        else: print(f"Warning: Skipping missing item {iid} during export."); errors += 1
+                    except tk.TclError: print(f"Warning: TclError accessing item {iid} during export."); errors += 1
+                    except Exception as item_e: print(f"Error exporting item {iid}: {item_e}"); errors += 1
+
+            msg = f"Exported {exported_count} dialogue lines to:\n{export_path}"
+            status = f"Status: Exported {exported_count} lines."
+            if errors > 0:
+                 msg += f"\n\nEncountered {errors} errors (see console)."
+                 status += f" ({errors} errors)."
+                 messagebox.showwarning("Export Complete with Issues", msg, parent=self.root)
+            else:
+                 messagebox.showinfo("Export Successful", msg, parent=self.root)
+            self.status_label.config(text=status)
+
+        except (IOError, csv.Error) as e:
+             messagebox.showerror("Export Error", f"Failed to write or format file:\n{export_path}\nError: {e}", parent=self.root)
+             self.status_label.config(text="Status: Export failed.")
+        except Exception as e:
+             messagebox.showerror("Export Error", f"An unexpected error during export:\n{e}", parent=self.root)
+             print(f"Export Error: {e}"); traceback.print_exc()
+             self.status_label.config(text="Status: Export failed.")
+
+    def _import_dialogue(self):
+        """Imports text from a TSV file into the treeview."""
+        if not self.file_data or not self.item_id_map:
+             messagebox.showwarning("Import Error", "Load data first before importing.", parent=self.root)
+             return
+
+        initial_dir = self.output_folder.get() or self.input_folder.get() or str(pathlib.Path.home())
+        import_path = filedialog.askopenfilename(
+            title="Import Text From", initialdir=initial_dir,
+            filetypes=[("Tab Separated Values", "*.tsv"), ("Text Files", "*.txt"), ("All Files", "*.*")],
+            parent=self.root
+        )
+        if not import_path: return
+
+        imported_lines = []
+        source_folder_in_file = None
+        app_version_in_file = None
+        status_final = "Status: Import finished or cancelled." # Default final status
+
+        try:
+            with open(import_path, 'r', newline='', encoding='utf-8') as f:
+                lines_to_parse = []
+                for line in f:
+                    stripped_line = line.strip()
+                    if stripped_line.startswith('# SourceInputFolder:'): source_folder_in_file = stripped_line.split(':', 1)[1].strip()
+                    elif stripped_line.startswith('# ExportedFromAppVersion:'): app_version_in_file = stripped_line.split(':', 1)[1].strip()
+                    elif stripped_line.startswith('#'): continue # Ignore other comments
+                    elif stripped_line: lines_to_parse.append(line) # Add non-empty, non-comment lines
+
+                if not lines_to_parse:
+                    messagebox.showwarning("Import Warning", "No data lines found in file (excluding comments and blank lines).", parent=self.root)
+                    return
+
+                # Use csv.reader on the collected lines
+                reader = csv.reader(lines_to_parse, delimiter='\t', quoting=csv.QUOTE_MINIMAL)
+                header_skipped = False
+                invalid_rows = 0
+
+                for i, row in enumerate(reader):
+                    # Try to detect header row (optional)
+                    if i == 0 and len(row) >= 2 and row[0].strip().lower() == '#treeitemid' and row[1].strip().lower() == 'dialoguetext':
+                        header_skipped = True
+                        continue # Skip header
+
+                    # Process data rows
+                    if len(row) >= 2:
+                        iid = row[0].strip()
+                        text = row[1] # Keep original spacing/newlines from TSV
+                        if iid: # Must have an IID
+                            imported_lines.append({'iid': iid, 'text': text})
+                        else:
+                            print(f"Warning: Skipping row {i+1} (after comments) due to missing IID: {row}")
+                            invalid_rows += 1
+                    else:
+                        # Handle rows with fewer than 2 columns
+                        print(f"Warning: Skipping invalid data row {i+1} (after comments): {row}")
+                        invalid_rows += 1
+
+            if not imported_lines:
+                msg = "No valid data rows parsed."
+                if invalid_rows > 0: msg += f" Skipped {invalid_rows} invalid row(s)."
+                messagebox.showwarning("Import Warning", msg, parent=self.root)
+                return
+
+            # --- Confirmation Dialog ---
+            confirm_msg_parts = [f"Found {len(imported_lines)} lines with valid IIDs to import from:\n{pathlib.Path(import_path).name}"]
+            if invalid_rows > 0: confirm_msg_parts.append(f"(Skipped {invalid_rows} invalid rows)")
+
+            # Version Check
+            if app_version_in_file and app_version_in_file != APP_VERSION:
+                confirm_msg_parts.append(f"\nWARNING: File exported from v{app_version_in_file}, current is v{APP_VERSION}.")
+
+            # Folder Check
+            if source_folder_in_file:
+                 current_input = self.input_folder.get()
+                 try:
+                    norm_file_source = str(pathlib.Path(source_folder_in_file).resolve())
+                    norm_current_input = str(pathlib.Path(current_input).resolve()) if current_input else ""
+                    is_win = platform.system() == "Windows"
+                    # Case-insensitive compare on Windows
+                    if norm_current_input and (norm_file_source.lower() != norm_current_input.lower() if is_win else norm_file_source != norm_current_input):
+                         confirm_msg_parts.append(f"\n\nWARNING: File's source folder mismatches current input folder!")
+                         confirm_msg_parts.append(f"  File: {source_folder_in_file}")
+                         confirm_msg_parts.append(f"  Current: {current_input}")
+                 except Exception as path_e: print(f"Warning: Could not compare source folders: {path_e}")
+
+            confirm_msg_parts.append(f"\n\nOverwrite current text in matching rows?\n(Can be undone as a single step)")
+            confirm_msg = "\n".join(confirm_msg_parts)
+
+            if not messagebox.askyesno("Confirm Import", confirm_msg, parent=self.root): return
+
+            # --- Perform Import ---
+            self.status_label.config(text="Status: Importing..."); self.root.update_idletasks()
+            updated_count, skipped_count, error_count = 0, 0, 0
+            initial_states, final_states = {}, {} # For compound undo
+            valid_iids_in_tree = set(self.item_id_map.keys())
+
+            # Phase 1: Collect initial states for items that will change
+            for item in imported_lines:
+                iid = item['iid']; new_text = item['text']
+                if iid in valid_iids_in_tree:
+                    try:
+                        if not self.tree.exists(iid): skipped_count += 1; continue # Item exists in map but not tree? Skip.
+                        current_text = self.tree.set(iid, DIALOGUE_COLUMN_ID)
+                        if current_text != new_text:
+                            initial_states[iid] = current_text # Store original text for undo
+                            final_states[iid] = new_text     # Store imported text
+                        else:
+                            skipped_count += 1 # No change needed
+                    except tk.TclError: print(f"Warning: TclError getting initial state for {iid}."); skipped_count += 1; error_count += 1
+                    except Exception as e: print(f"Error getting initial state for {iid}: {e}"); skipped_count += 1; error_count += 1
+                else:
+                    skipped_count += 1 # IID from file not found in current data
+
+            if not final_states: # Check if any changes are actually needed
+                 messagebox.showinfo("Import Info", f"No matching items found needing updates.\nSkipped/Not Found: {skipped_count}", parent=self.root)
+                 status_final = f"Status: Import complete. No changes. Skipped: {skipped_count}";
+                 self.status_label.config(text=status_final); return
+
+            # Phase 2: Apply updates
+            self.status_label.config(text=f"Status: Applying {len(final_states)} updates..."); self.root.update_idletasks()
+            restored_states_for_undo = {} # Store the actual initial states for undo
+            for iid, text_to_import in final_states.items():
+                 current_text_before_update = initial_states.get(iid, "[ERROR: Unknown initial state]")
+                 restored_states_for_undo[iid] = current_text_before_update # Store original for undo record
+                 # Perform update, mark as undo/redo action
+                 if self._update_tree_and_data(iid, text_to_import, is_undo_redo=True):
+                     updated_count += 1
+                 else:
+                     error_count += 1; print(f"Error importing data for item {iid}.")
+                     # Keep original text in restored_states_for_undo if update failed
+
+            # Add compound undo step if successful updates occurred
+            if updated_count > 0:
+                self.undo_stack.append({'type': 'import_text', 'initial_states': restored_states_for_undo, 'final_states': final_states})
+                self.redo_stack.clear(); self._update_undo_redo_state()
+
+            result_msg = f"Import Complete.\n\nUpdated: {updated_count}\nSkipped/Not Found: {skipped_count}\nErrors: {error_count}"
+            status_final = f"Status: Import complete. Updated: {updated_count}, Skipped: {skipped_count}, Errors: {error_count}"
+            if error_count > 0:
+                 messagebox.showwarning("Import Complete with Errors", result_msg + "\nCheck console.", parent=self.root)
+            else:
+                 messagebox.showinfo("Import Complete", result_msg, parent=self.root)
+
+        except FileNotFoundError:
+            messagebox.showerror("Import Error", f"File not found:\n{import_path}", parent=self.root)
+            status_final = "Status: Import failed (File not found)."
+        except (IOError, csv.Error) as e:
+            messagebox.showerror("Import Error", f"Failed to read or parse TSV file:\n{import_path}\nError: {e}", parent=self.root)
+            status_final = "Status: Import failed (Read/Parse Error)."
+        except Exception as e:
+            messagebox.showerror("Import Error", f"An unexpected error occurred during import:\n{e}", parent=self.root)
+            print(f"Import Error: {e}"); traceback.print_exc()
+            status_final = "Status: Import failed (Unexpected Error)."
+        finally:
+            # Update status bar unless it was already set in case of no changes needed
+            self.status_label.config(text=status_final); self.root.update_idletasks()
 
     # --- Help / About Dialogs ---
     def _show_about(self):
-        messagebox.showinfo("About HITMAN III JSON Editor",
-                            "HITMAN III JSON Editor v1.1\n\n"
-                            "A tool to easily view, search, and edit Text "
-                            "within specific JSON file structures.\n\n"
+        """Displays the About dialog."""
+        messagebox.showinfo("About HITMAN JSON Editor",
+                            f"HITMAN JSON Editor v{APP_VERSION}\n\n"
+                            "Tool for viewing, editing, and saving text within "
+                            "HITMAN JSON language files (DLGE and LOCR formats).\n\n"
                             "Features:\n"
-                            "- Loads 'en' language strings from JSON files.\n"
-                            "- Splits strings by //(timecode)\\\\ segments.\n"
-                            "- Allows direct editing of text segments.\n"
-                            "- Search functionality with highlighting.\n"
-                            "- Saves changes to a separate output folder.\n"
-                            "- DarkRed/Light/Dark theme support.\n\n"
-                            "All rights reserved by MrGamesKingPro\n\n"
-                            "https://github.com/MrGamesKingPro")
+                            "- Loads 'en' strings from DLGE (with segments) and LOCR.\n"
+                            "- Direct text editing, Search/Replace (Case-Insensitive).\n"
+                            "- Multi-level Undo/Redo.\n"
+                            "- Export/Import text via TSV (preserves mapping).\n"
+                            "- Copy/Cut/Paste.\n"
+                            "- Open original file / folders.\n"
+                            "- Selectable Themes (Light/Dark/Red-Dark).\n"
+                            "- Remembers state (folders, theme, search, window size).\n\n"
+                            "Developed by: MrGamesKingPro\n"
+                            "GitHub: https://github.com/MrGamesKingPro\n",
+                            parent=self.root)
 
     def _show_help(self):
-         messagebox.showinfo("Help",
+         """Displays the Help/Instructions dialog."""
+         messagebox.showinfo("Help / Instructions",
                             "Basic Usage:\n\n"
-                            "1. Select Input Folder: Choose the folder containing your .json files.\n"
-                            "2. Select Output Folder: Choose a *different* folder where modified files will be saved.\n"
-                            "3. Browse Data: Files containing '\"Language\": \"en\"' strings will be loaded. Segments are displayed in the table.\n"
-                            "4. Edit: Double-click a cell in the 'Text' column to edit it. Press Enter to save or Escape to cancel.\n"
-                            "5. Open Original File: Double-click a grey file header row to open the source JSON file in your default editor.\n"
-                            "6. Search: Type in the 'Search Text' box and press Enter or click 'Find'. Use 'Next'/'Previous' to navigate matches.\n"
-                            "7. Copy/Cut/Paste: Use the Edit menu, context menu (right-click), or keyboard shortcuts (Ctrl+C/X/V or Cmd+C/X/V).\n"
-                            "8. Save Changes: Click 'Save All Changes' or use File > Save (Ctrl+S/Cmd+S). Only modified files will be written to the output folder.\n"
-                            "9. Theme: Change the appearance via View > Theme."
+                            "1. Folders:\n"
+                            "   - Select Input: Folder containing original JSON files (.DLGE, .LOCR).\n"
+                            "   - Select Output: Folder where modified files will be saved.\n"
+                            "   - Input/Output cannot be the same folder.\n"
+                            "   - Use 'Open' buttons to view selected folders.\n\n"
+                            "2. Loading:\n"
+                            "   - Files load automatically when Input Folder is selected.\n"
+                            "   - Only 'en' language strings are loaded for editing.\n"
+                            "   - Files with unrecognized formats are skipped.\n\n"
+                            "3. Viewing Data:\n"
+                            "   - Treeview shows items grouped by file.\n"
+                            "   - Columns: Line/ID, Timecode/Hash, Text (Editable).\n"
+                            "   - Double-click grey file header to open the original file.\n\n"
+                            "4. Editing:\n"
+                            "   - Double-click a cell in the 'Text' column.\n"
+                            "   - Press Enter/Return to save the edit.\n"
+                            "   - Press Escape to cancel the edit.\n"
+                            "   - Clicking outside the edit box also saves (unless Escape was pressed).\n\n"
+                            "5. Search & Replace:\n"
+                            "   - Enter text in 'Search Text' field.\n"
+                            "   - Find: Jumps to the next match sequentially.\n"
+                            "   - Find All: Highlights all matches.\n"
+                            "   - Next/Previous: Navigate between matches.\n"
+                            "   - Replace: Replaces the currently selected match.\n"
+                            "   - Replace All: Replaces all currently found matches (confirm first).\n"
+                            "   - Search is case-insensitive.\n\n"
+                            "6. Clipboard:\n"
+                            "   - Use Edit menu, context menu (right-click), or shortcuts:\n"
+                            "     - " + self._get_accelerator("C") + " (Copy)\n"
+                            "     - " + self._get_accelerator("X") + " (Cut)\n"
+                            "     - " + self._get_accelerator("V") + " (Paste)\n"
+                            "   - Works on selected 'Text' cell in the tree or within text entry fields.\n\n"
+                            "7. Undo/Redo:\n"
+                            "   - Use Edit menu, context menu, or shortcuts:\n"
+                            "     - " + self._get_accelerator("Z") + " (Undo)\n"
+                            "     - " + self._get_redo_accelerator() + " (Redo)\n"
+                            "   - Applies to edits, cut, paste, replace, replace all, import.\n\n"
+                            "8. Export/Import (File Menu):\n"
+                            "   - Export: Saves current text to a TSV file (Tab Separated).\n"
+                            "   - Import: Loads text from a TSV file, matching based on internal ID.\n"
+                            "   - Useful for external editing (e.g., spreadsheets).\n\n"
+                            "9. Save All Changes:\n"
+                            "   - Use File menu, button, or shortcut (" + self._get_accelerator("S") + ").\n"
+                            "   - Saves *only* files with modifications (compared to last load/save) to the Output folder.\n"
+                            "   - Updates the internal 'baseline' for comparison.\n"
+                            "   - Clears Undo/Redo history after successful save.\n\n"
+                            "10. Theme: Change via View > Theme menu.\n\n"
+                            "11. State Saving: Folders, theme, search terms, window size/position are saved automatically on exit.",
+                            parent=self.root
                            )
+
+    def _get_version(self):
+        """Extracts version from the APP_VERSION constant."""
+        return APP_VERSION
+
 
 if __name__ == "__main__":
     root = tk.Tk()
