@@ -34,7 +34,7 @@ FILE_HEADER_TAG = 'file_header' # Define a constant for the tag
 SEPARATOR_TAG = 'separator'
 SEARCH_HIGHLIGHT_TAG = 'search_highlight' # Tag for search results
 CONFIG_FILE_NAME = "H-III-Config.ini" # Config file name
-APP_VERSION = "1.2" # <<<< Slightly incremented version for consistency
+APP_VERSION = "1.3" # <<<< Slightly incremented version for new feature
 
 # --- File Formats ---
 FORMAT_DLGE = 'DLGE'
@@ -75,6 +75,48 @@ THEMES = {
     }
 }
 
+# --- Helper functions for string escaping/unescaping for editor display ---
+def custom_escape_for_editor(text_from_json):
+    """Converts special characters from JSON string to editor-displayable version.
+    - Literal backslashes '\\' become '\\\\'
+    - Newlines '\n' become '\\n'
+    - Carriage returns '\r' become '\\r'
+    - Tabs '\t' become '\\t'
+    """
+    if not isinstance(text_from_json, str): # Ensure input is a string
+        return str(text_from_json)
+    text = text_from_json.replace('\\', '\\\\') # Must be first
+    text = text.replace('\n', '\\n')
+    text = text.replace('\r', '\\r')
+    text = text.replace('\t', '\\t')
+    return text
+
+def custom_unescape_from_editor(text_from_editor):
+    """Converts editor-displayable version of string back to JSON string format."""
+    if not isinstance(text_from_editor, str):
+        return str(text_from_editor)
+    
+    # Using a unique placeholder (Private Use Area Unicode character)
+    # to temporarily mark already-escaped backslashes (\\).
+    # This prevents '\\n' (literal backslash-n) from being unescaped as a newline.
+    temp_placeholder = "\uE001" # Using a single PUA character as a placeholder
+
+    # Step 1: Protect '\\' sequences by replacing them with placeholder + 'TEMP_ESCAPED_SLASH'
+    # This specifically targets '\\\\' which represents a single literal backslash in editor_text.
+    text = text_from_editor.replace('\\\\', temp_placeholder)
+
+    # Step 2: Unescape \n, \r, \t
+    # These should now correctly unescape sequences like '\n' to a newline,
+    # without affecting what was originally '\\n' (now 'placeholder' + 'n').
+    text = text.replace('\\n', '\n')
+    text = text.replace('\\r', '\r')
+    text = text.replace('\\t', '\t')
+
+    # Step 3: Restore the original literal backslashes
+    text = text.replace(temp_placeholder, '\\')
+    return text
+
+
 class JsonEditorApp:
     def __init__(self, root):
         self.root = root
@@ -99,16 +141,18 @@ class JsonEditorApp:
         #   "path": pathlib.Path,
         #   "format": FORMAT_DLGE | FORMAT_LOCR,
         #   "json_content": original loaded JSON structure (for reference),
-        #   "en_strings": [  # List of extracted 'en' text data (editable state)
+        #   "en_strings": [  # List of extracted 'en' text data
         #     # DLGE format entry:
         #     { "original_item_index": int, "original_line_number": int|None,
-        #       "original_string": str, # <--- BASELINE STRING, UPDATED ON SAVE
-        #       "segments": [ {"original_prefix": str|None, "text": str, "iid": str}, ... ] },
+        #       "original_string": str, # Raw string from JSON (with actual newlines, etc.)
+        #       "segments": [ {"original_prefix": str|None,
+        #                      "text": str, # Escaped for editor display (e.g., '\\n')
+        #                      "iid": str}, ... ] },
         #     # LOCR format entry:
         #     { "original_lang_block_index": int, "original_string_item_index": int, "original_line_number": int|None,
         #       "string_hash": int|str|None,
-        #       "text": str, # <--- EDITABLE TEXT
-        #       "original_text": str, # <--- BASELINE STRING, UPDATED ON SAVE
+        #       "text": str, # Escaped for editor display (e.g., '\\n')
+        #       "original_text": str, # Raw string from JSON (with actual newlines, etc.)
         #       "iid": str }
         #   ]
         # }
@@ -719,7 +763,7 @@ class JsonEditorApp:
 
         Args:
             iid: The Treeview item ID.
-            new_text: The new text value.
+            new_text: The new text value (this is the editor-escaped version).
             is_undo_redo: Flag to prevent logging undo/redo actions themselves.
 
         Returns:
@@ -773,7 +817,7 @@ class JsonEditorApp:
 
             # --- Undo/Redo Handling ---
             if not is_undo_redo:
-                # Store the *old* state before changing it
+                # Store the *old* state before changing it (current_tree_text is editor-escaped)
                 self.undo_stack.append({'iid': iid, 'old_value': current_tree_text, 'new_value': new_text})
                 self.redo_stack.clear() # Clear redo stack on new user action
                 self._update_undo_redo_state()
@@ -785,7 +829,7 @@ class JsonEditorApp:
                    isinstance(string_data.get("segments"), list) and \
                    0 <= seg_idx < len(string_data["segments"]) and \
                    isinstance(string_data["segments"][seg_idx], dict):
-                    # UPDATE the 'text' field of the specific segment
+                    # UPDATE the 'text' field of the specific segment (new_text is already editor-escaped)
                     string_data["segments"][seg_idx]["text"] = new_text
                     data_updated = True
                 else:
@@ -794,7 +838,7 @@ class JsonEditorApp:
 
             elif file_format == FORMAT_LOCR:
                 if "text" in string_data: # LOCR stores text directly in string_info
-                    # UPDATE the 'text' field directly
+                    # UPDATE the 'text' field directly (new_text is already editor-escaped)
                     string_data["text"] = new_text
                     data_updated = True
                 else:
@@ -937,7 +981,7 @@ class JsonEditorApp:
         if not bbox: return # Item not visible or gone
 
         x, y, width, height = bbox
-        current_text = self.tree.set(item_id, column_id)
+        current_text = self.tree.set(item_id, column_id) # This is editor-escaped text
         self.edit_entry = ttk.Entry(self.tree, style='TEntry')
 
         self.edit_entry.place(x=x, y=y, width=width, height=height, anchor='nw')
@@ -981,7 +1025,7 @@ class JsonEditorApp:
              if self.edit_entry: self._destroy_edit_entry()
              return
 
-        new_text = self.edit_entry.get()
+        new_text = self.edit_entry.get() # This is editor-escaped text
         # Update function handles tree update, data update, and undo logging
         update_successful = self._update_tree_and_data(item_id, new_text)
         self._destroy_edit_entry() # Destroy the entry regardless of success
@@ -1245,26 +1289,31 @@ class JsonEditorApp:
                         for item_idx, item in enumerate(content):
                             if isinstance(item, dict) and item.get("Language") == "en":
                                 found_en_in_file = True
-                                original_string = item.get("String", "") # Store original string as baseline
+                                raw_original_string = item.get("String", "") # Raw string from JSON
                                 segments_data = []
                                 line_num = en_string_line_map.get(item_idx, None) # Lookup by item index
 
-                                matches = list(SEGMENT_REGEX.finditer(original_string))
+                                matches = list(SEGMENT_REGEX.finditer(raw_original_string))
                                 if matches:
                                     for seg_idx, match in enumerate(matches):
+                                        raw_segment_text = match.group(2)
                                         segments_data.append({
                                             "original_prefix": match.group(1),
-                                            "text": match.group(2), # This is the editable part
+                                            "text": custom_escape_for_editor(raw_segment_text), # Escaped for editor
                                             "iid": None
                                         })
                                 else:
                                     # No segments, store the whole string as one editable segment
-                                    segments_data.append({ "original_prefix": None, "text": original_string, "iid": None })
+                                    segments_data.append({
+                                        "original_prefix": None,
+                                        "text": custom_escape_for_editor(raw_original_string), # Escaped for editor
+                                        "iid": None
+                                    })
 
                                 current_en_strings_data.append({
                                     "original_item_index": item_idx,
                                     "original_line_number": line_num,
-                                    "original_string": original_string, # Baseline for comparison
+                                    "original_string": raw_original_string, # Store raw original
                                     "segments": segments_data
                                 })
 
@@ -1276,22 +1325,19 @@ class JsonEditorApp:
                                 # Iterate through the string items in this 'en' block (index 1 onwards)
                                 for string_item_list_idx, string_item in enumerate(lang_block[1:], start=1):
                                     if isinstance(string_item, dict) and "String" in string_item:
-                                        text = string_item.get("String", "")
+                                        raw_text = string_item.get("String", "") # Raw string from JSON
                                         string_hash = string_item.get("StringHash", None) # Keep hash
-                                        # Map key uses 1-based index relative to *string items*
                                         map_key = (lang_block_idx, string_item_list_idx)
                                         line_num = en_string_line_map.get(map_key, None)
-
-                                        # Store the *absolute* index within the inner list (0=lang, 1=str1, 2=str2...)
-                                        original_string_item_index_in_list = string_item_list_idx # This is the index used for saving
+                                        original_string_item_index_in_list = string_item_list_idx
 
                                         current_en_strings_data.append({
                                             "original_lang_block_index": lang_block_idx,
-                                            "original_string_item_index": original_string_item_index_in_list, # Absolute index for saving
+                                            "original_string_item_index": original_string_item_index_in_list,
                                             "original_line_number": line_num,
                                             "string_hash": string_hash,
-                                            "text": text, # Editable text
-                                            "original_text": text, # Baseline for comparison
+                                            "text": custom_escape_for_editor(raw_text), # Escaped for editor
+                                            "original_text": raw_text, # Store raw original
                                             "iid": None
                                         })
 
@@ -1335,7 +1381,7 @@ class JsonEditorApp:
                             iid = f"f{file_index}_i{string_info['original_item_index']}_s{segment_idx}"
                             segment['iid'] = iid # Store IID back in the segment data
                             prefix_display = segment.get("original_prefix", "") or ""
-                            text_display = segment["text"] # Display the editable text part
+                            text_display = segment["text"] # This is the editor-escaped text
 
                             # Column values: Line#, Prefix, Editable Text
                             self.tree.insert('', tk.END, iid=iid, values=(line_num_display, prefix_display, text_display))
@@ -1357,7 +1403,7 @@ class JsonEditorApp:
                         iid = f"f{file_index}_lb{lang_block_idx}_si{item_idx_in_list}"
                         string_info['iid'] = iid # Store IID back in the string info data
                         string_hash_display = str(string_info.get("string_hash") or "NO HASH")
-                        text_display = string_info["text"] # Display the editable text
+                        text_display = string_info["text"] # This is the editor-escaped text
 
                         # Display line number (if found) or hash in the first column (Line / ID)
                         col1_display = line_num_display if string_info.get("original_line_number") else f"H:{string_hash_display}"
@@ -1462,6 +1508,7 @@ class JsonEditorApp:
         self._clear_search_highlight() # Remove previous single highlights
         self.search_results = []
         self.current_search_index = -1
+        # Search term does not need special escaping here, user types what they see (e.g., \\n for newline)
         term_lower = term.lower()
         self._last_search_was_findall = False # Mark as regular find
 
@@ -1472,7 +1519,7 @@ class JsonEditorApp:
         for iid in editable_iids:
             try:
                 if not self.tree.exists(iid): continue
-                dialogue_text = self.tree.set(iid, DIALOGUE_COLUMN_ID)
+                dialogue_text = self.tree.set(iid, DIALOGUE_COLUMN_ID) # This is editor-escaped
                 if term_lower in dialogue_text.lower():
                     self.search_results.append(iid)
             except tk.TclError:
@@ -1501,7 +1548,7 @@ class JsonEditorApp:
         self._clear_search_highlight()
         self.search_results = []
         self.current_search_index = -1
-        term_lower = term.lower()
+        term_lower = term.lower() # User types what they see
         self._last_search_was_findall = True
 
         found_count = 0
@@ -1512,7 +1559,7 @@ class JsonEditorApp:
         for iid in editable_iids:
             try:
                 if not self.tree.exists(iid): continue
-                dialogue_text = self.tree.set(iid, DIALOGUE_COLUMN_ID)
+                dialogue_text = self.tree.set(iid, DIALOGUE_COLUMN_ID) # editor-escaped
                 if term_lower in dialogue_text.lower():
                     self.search_results.append(iid)
                     current_tags = list(self.tree.item(iid, "tags"))
@@ -1619,10 +1666,10 @@ class JsonEditorApp:
             return
 
         iid = self.search_results[self.current_search_index]
-        search_term = self.search_term.get()
-        replace_term_val = self.replace_term.get()
+        search_term_val = self.search_term.get() # User types what they see (e.g., \\n for newline)
+        replace_term_val = self.replace_term.get() # User types what they see
 
-        if not search_term:
+        if not search_term_val:
             messagebox.showwarning("Replace Error", "Search term is empty.", parent=self.root)
             return
 
@@ -1632,35 +1679,34 @@ class JsonEditorApp:
                  self._remove_result_and_advance(self.current_search_index)
                  return
 
-            current_text = self.tree.set(iid, DIALOGUE_COLUMN_ID)
-            search_term_lower = search_term.lower()
-            current_text_lower = current_text.lower()
+            current_text_escaped = self.tree.set(iid, DIALOGUE_COLUMN_ID) # editor-escaped
+            
+            # For case-insensitive replacement, we need to find the match in the lowercased version
+            # then apply the replacement to the original-cased (but editor-escaped) version.
+            search_term_lower = search_term_val.lower()
+            current_text_lower = current_text_escaped.lower()
             match_index = current_text_lower.find(search_term_lower)
 
             if match_index != -1:
-                # Perform case-preserving replacement if possible (simple first match replace)
-                # This uses the original case search term length for slicing
-                new_text = current_text[:match_index] + replace_term_val + current_text[match_index + len(search_term):]
+                # Perform replacement on the editor-escaped string
+                new_text_escaped = (current_text_escaped[:match_index] +
+                                    replace_term_val +
+                                    current_text_escaped[match_index + len(search_term_val):])
 
-                # Update data, tree, and log undo
-                if self._update_tree_and_data(iid, new_text):
-                    # Check if the replacement removed the term or if it still exists (e.g., replacing 'a' with 'aa')
-                    if search_term_lower not in new_text.lower():
-                        # Term gone, remove from results and advance
+                # Update data, tree, and log undo (pass editor-escaped string)
+                if self._update_tree_and_data(iid, new_text_escaped):
+                    # Check if the replacement removed the term or if it still exists
+                    if search_term_lower not in new_text_escaped.lower():
                         self._remove_result_and_advance(self.current_search_index)
                     else:
-                         # Term still present, update status but stay on item
                          self.status_label.config(text=f"Status: Replaced. Item still contains term. Match {self.current_search_index + 1} of {len(self.search_results)}.")
-                         self._focus_search_result(self.current_search_index) # Re-focus/highlight
+                         self._focus_search_result(self.current_search_index)
                 else:
-                     # Update failed, likely internal error shown by _update_tree_and_data
                      print(f"Warning: Replacement failed for item {iid} due to update error.")
-                     # Maybe advance anyway? Or keep selection? Keep for now.
                      self.status_label.config(text=f"Status: Replace failed for current item.")
             else:
-                 # Term not found in current text (maybe changed by another action?)
-                 print(f"Warning: Search term '{search_term}' not found in selected item {iid} text '{current_text}'. Advancing.")
-                 self._remove_result_and_advance(self.current_search_index, advance_only=True) # Advance without removing
+                 print(f"Warning: Search term '{search_term_val}' not found in selected item {iid} text '{current_text_escaped}'. Advancing.")
+                 self._remove_result_and_advance(self.current_search_index, advance_only=True)
 
         except tk.TclError as e:
              print(f"Error during replace operation for {iid}: {e}")
@@ -1670,7 +1716,7 @@ class JsonEditorApp:
              traceback.print_exc()
              messagebox.showerror("Replace Error", f"An unexpected error occurred:\n{e}", parent=self.root)
         finally:
-            self._update_search_replace_button_states() # Update buttons based on remaining results
+            self._update_search_replace_button_states()
 
     def _remove_result_and_advance(self, index_to_remove, advance_only=False):
         """Helper to remove a result and navigate appropriately."""
@@ -1708,9 +1754,9 @@ class JsonEditorApp:
 
     def _replace_all(self, event=None):
         """Replaces all occurrences in all currently found search results."""
-        self._destroy_edit_entry() # Ensure edit isn't active
-        search_term_val = self.search_term.get()
-        replace_term_val = self.replace_term.get()
+        self._destroy_edit_entry()
+        search_term_val = self.search_term.get() # Editor-escaped form
+        replace_term_val = self.replace_term.get() # Editor-escaped form
 
         if not search_term_val:
             messagebox.showwarning("Replace Error", "Search term is empty.", parent=self.root)
@@ -1719,9 +1765,7 @@ class JsonEditorApp:
             messagebox.showinfo("Replace All", "No search results to replace. Use Find or Find All first.", parent=self.root)
             return
 
-        # Process a copy of the results, as the list might change during iteration if needed (though current logic doesn't)
         items_to_process = list(self.search_results)
-
         confirm = messagebox.askyesno(
             "Confirm Replace All",
             f"Replace ALL occurrences of '{search_term_val}' with '{replace_term_val}'\n"
@@ -1731,74 +1775,53 @@ class JsonEditorApp:
         )
         if not confirm: return
 
-        count = 0
-        errors = 0
-        # For compound undo: Store initial and final states for changed items
-        initial_states = {} # {iid: original_text}
-        final_states = {}   # {iid: new_text}
+        count = 0; errors = 0
+        initial_states, final_states = {}, {}
 
         try:
-            # Use regex for replacement to handle multiple occurrences within a single item easily
-            # re.escape ensures literal matching of the search term
+            # Regex for replacement on editor-escaped strings
+            # User types search_term_val as they see it (e.g. \\n for newline)
+            # re.escape will ensure it's treated literally in regex context
             regex = re.compile(re.escape(search_term_val), re.IGNORECASE)
         except re.error as e:
              messagebox.showerror("Regex Error", f"Invalid search term for replacement: {e}", parent=self.root)
              return
 
-        # --- Phase 1: Prepare Undo Data & Identify changes ---
         self.status_label.config(text="Status: Preparing Replace All...")
         self.root.update_idletasks()
         for iid in items_to_process:
              try:
                  if not self.tree.winfo_exists() or not self.tree.exists(iid) or iid not in self.item_id_map: continue
-                 current_text = self.tree.set(iid, DIALOGUE_COLUMN_ID)
-                 # Preview the replacement
-                 new_text_preview = regex.sub(replace_term_val, current_text)
-                 if new_text_preview != current_text:
-                     # Only store if a change will actually occur
-                     initial_states[iid] = current_text
-                     final_states[iid] = new_text_preview # Store the target state
+                 current_text_escaped = self.tree.set(iid, DIALOGUE_COLUMN_ID) # editor-escaped
+                 new_text_escaped_preview = regex.sub(replace_term_val, current_text_escaped)
+                 if new_text_escaped_preview != current_text_escaped:
+                     initial_states[iid] = current_text_escaped
+                     final_states[iid] = new_text_escaped_preview
              except tk.TclError: errors += 1; print(f"Warning: TclError pre-checking replace all for {iid}")
              except Exception as e: print(f"Error pre-checking item {iid}: {e}"); errors += 1
 
         if not initial_states:
-             # No items actually needed changing from the current results
              messagebox.showinfo("Replace All", "No occurrences found needing replacement in the current results.", parent=self.root)
-             self._clear_search() # Clear results as nothing was done
-             return
+             self._clear_search(); return
 
-        # --- Phase 2: Perform Replacements ---
         self.status_label.config(text=f"Status: Performing Replace All on {len(initial_states)} items...")
         self.root.update_idletasks()
 
-        # Use the pre-calculated final states
-        restored_states_for_undo = {} # Store the actual initial states for undo
-        for iid, new_text in final_states.items():
-            original_text = initial_states.get(iid)
-            if original_text is None: continue # Should not happen based on Phase 1
-
-            restored_states_for_undo[iid] = original_text # Store original for undo
-
-            # Perform the update, marking it as part of undo/redo sequence
-            # to avoid individual undo steps for each replacement
-            if self._update_tree_and_data(iid, new_text, is_undo_redo=True):
+        restored_states_for_undo = {}
+        for iid, new_text_escaped in final_states.items():
+            original_text_escaped = initial_states.get(iid)
+            if original_text_escaped is None: continue
+            restored_states_for_undo[iid] = original_text_escaped
+            if self._update_tree_and_data(iid, new_text_escaped, is_undo_redo=True): # Pass editor-escaped
                  count += 1
             else:
                  errors += 1
-                 # If update failed, the item remains in its initial state
-                 # Keep `original_text` in restored_states_for_undo
-                 # Keep `new_text` in final_states (this represents the *attempted* state)
-
-        # --- Phase 3: Finalize ---
-        if count > 0: # Only add undo step if something actually changed successfully
-            # Add a single compound action to the undo stack
+        
+        if count > 0:
             self.undo_stack.append({'type': 'replace_all', 'initial_states': restored_states_for_undo, 'final_states': final_states})
-            self.redo_stack.clear() # Clear redo on new action
-            self._update_undo_redo_state()
+            self.redo_stack.clear(); self._update_undo_redo_state()
 
-        self._clear_search() # Clear search highlights and results after operation
-
-        # Report results
+        self._clear_search()
         status_msg = f"Status: Replace All finished. Replaced in {count} item(s)."
         info_msg = f"Replace All complete.\n\nReplaced text in {count} item(s)."
         if errors > 0:
@@ -1807,12 +1830,10 @@ class JsonEditorApp:
              messagebox.showwarning("Replace All Complete with Issues", info_msg, parent=self.root)
         elif count > 0 :
              messagebox.showinfo("Replace All Complete", info_msg, parent=self.root)
-        elif initial_states and count == 0: # Means we identified changes but all updates failed
+        elif initial_states and count == 0:
              status_msg = f"Status: Replace All failed. Encountered {errors} error(s). No changes made."
              info_msg = f"Replace All failed.\n\nEncountered {errors} error(s). No changes were successfully made."
              messagebox.showerror("Replace All Failed", info_msg, parent=self.root)
-        # If initial_states was empty, we already returned earlier.
-
         self.status_label.config(text=status_msg)
 
 
@@ -1854,30 +1875,20 @@ class JsonEditorApp:
         try:
             if action_type in ['replace_all', 'import_text']:
                 # Compound action: Restore multiple initial states
-                initial_states = action.get('initial_states', {}) # State BEFORE the original action
-                final_states = action.get('final_states', {})     # State AFTER the original action (needed for redo)
+                initial_states = action.get('initial_states', {}) # State BEFORE the original action (editor-escaped)
+                final_states = action.get('final_states', {})     # State AFTER the original action (editor-escaped)
                 if not initial_states: success = False; print("Error: Undo data missing initial states.")
                 else:
                     affected_iids = list(initial_states.keys())
                     if affected_iids: first_iid = affected_iids[0]
                     restored_states_for_redo = {} # Track what we actually put back for redo
                     failed_iids = []
-                    for iid, old_value in initial_states.items():
-                        # Store the value *before* undoing (the final state) for redo
-                        current_value_before_undo = final_states.get(iid, None) # Get the state we are undoing from
-                        if current_value_before_undo is None: print(f"Warning: Missing final state for {iid} in undo action.")
-
-                        restored_states_for_redo[iid] = current_value_before_undo # Store for redo
-
-                        # Perform the update back to the old value
-                        if not self._update_tree_and_data(iid, old_value, is_undo_redo=True):
+                    for iid, old_value_escaped in initial_states.items():
+                        current_value_before_undo_escaped = final_states.get(iid, None)
+                        if current_value_before_undo_escaped is None: print(f"Warning: Missing final state for {iid} in undo action.")
+                        restored_states_for_redo[iid] = current_value_before_undo_escaped
+                        if not self._update_tree_and_data(iid, old_value_escaped, is_undo_redo=True): # Pass editor-escaped
                             success = False; failed_iids.append(iid)
-                            # If undo failed, redo should restore to *this* failed state
-                            # So restored_states_for_redo[iid] is still correct as the value before *attempted* undo
-
-                    # Push to redo stack only if overall operation seemed valid
-                    # The redo stack needs the states *before* the original operation (initial_states)
-                    # and the states *after* the original operation (which we stored in restored_states_for_redo).
                     if initial_states:
                          self.redo_stack.append({'type': action_type, 'initial_states': initial_states, 'final_states': restored_states_for_redo})
                     if failed_iids: messagebox.showerror("Undo Error", f"Errors undoing {action_type} for: {', '.join(failed_iids)}.", parent=self.root)
@@ -1885,14 +1896,11 @@ class JsonEditorApp:
 
             elif action_type == 'single' and 'iid' in action:
                 # Single item edit
-                iid = action['iid']; old_value = action['old_value']; new_value = action['new_value']
+                iid = action['iid']; old_value_escaped = action['old_value']; new_value_escaped = action['new_value']
                 first_iid = iid
-                # Perform update back to old value
-                if self._update_tree_and_data(iid, old_value, is_undo_redo=True):
-                    # Push original action details to redo stack
-                    self.redo_stack.append({'type': 'single', 'iid': iid, 'old_value': old_value, 'new_value': new_value})
+                if self._update_tree_and_data(iid, old_value_escaped, is_undo_redo=True): # Pass editor-escaped
+                    self.redo_stack.append({'type': 'single', 'iid': iid, 'old_value': old_value_escaped, 'new_value': new_value_escaped})
                 else:
-                    # Update failed, don't add to redo stack
                     success = False
                     messagebox.showerror("Undo Error", f"Could not undo change for item {iid}.", parent=self.root)
             else:
@@ -1905,7 +1913,6 @@ class JsonEditorApp:
             self.redo_stack.clear() # Clear redo if unexpected error occurs
 
         self._update_undo_redo_state()
-        # Try to focus the first affected item for context
         if first_iid and self.tree.winfo_exists() and self.tree.exists(first_iid):
              try: self.tree.see(first_iid); self.tree.selection_set(first_iid)
              except tk.TclError: pass
@@ -1914,54 +1921,38 @@ class JsonEditorApp:
     def _redo_action(self, event=None):
         """Performs the Redo action."""
         if not self.redo_stack: return "break" if event else None
-        self._destroy_edit_entry() # Ensure edit isn't active
+        self._destroy_edit_entry()
         action = self.redo_stack.pop()
-        action_type = action.get('type', 'single') # Default to single item edit
+        action_type = action.get('type', 'single')
         success = True
-        first_iid = None # To focus after undo/redo
+        first_iid = None
 
         try:
             if action_type in ['replace_all', 'import_text']:
-                # Compound action: Restore multiple final states
-                initial_states = action.get('initial_states', {}) # State BEFORE the original action (needed for undo)
-                final_states = action.get('final_states', {})     # State AFTER the original action
-                if not final_states: success = False; print("Error: Redo data missing final states.")
+                initial_states_escaped = action.get('initial_states', {}) # State BEFORE original action (editor-escaped)
+                final_states_escaped = action.get('final_states', {})     # State AFTER original action (editor-escaped)
+                if not final_states_escaped: success = False; print("Error: Redo data missing final states.")
                 else:
-                    affected_iids = list(final_states.keys())
+                    affected_iids = list(final_states_escaped.keys())
                     if affected_iids: first_iid = affected_iids[0]
-                    restored_states_for_undo = {} # Track what we actually put back for undo
+                    restored_states_for_undo = {}
                     failed_iids = []
-                    for iid, new_value in final_states.items():
-                         # Store the value *before* redoing (the initial state) for undo
-                         current_value_before_redo = initial_states.get(iid, None) # Get the state we are redoing from
-                         if current_value_before_redo is None: print(f"Warning: Missing initial state for {iid} in redo action.")
-
-                         restored_states_for_undo[iid] = current_value_before_redo # Store for undo
-
-                         # Perform the update forward to the new value
-                         if not self._update_tree_and_data(iid, new_value, is_undo_redo=True):
+                    for iid, new_value_escaped in final_states_escaped.items():
+                         current_value_before_redo_escaped = initial_states_escaped.get(iid, None)
+                         if current_value_before_redo_escaped is None: print(f"Warning: Missing initial state for {iid} in redo action.")
+                         restored_states_for_undo[iid] = current_value_before_redo_escaped
+                         if not self._update_tree_and_data(iid, new_value_escaped, is_undo_redo=True): # Pass editor-escaped
                              success = False; failed_iids.append(iid)
-                             # If redo failed, undo should restore to *this* failed state
-                             # So restored_states_for_undo[iid] is still correct as the value before *attempted* redo
-
-                    # Push to undo stack only if overall operation seemed valid
-                    # The undo stack needs the states *before* this redo (which we stored in restored_states_for_undo)
-                    # and the states *after* this redo (final_states).
-                    if final_states:
-                         self.undo_stack.append({'type': action_type, 'initial_states': restored_states_for_undo, 'final_states': final_states})
+                    if final_states_escaped:
+                         self.undo_stack.append({'type': action_type, 'initial_states': restored_states_for_undo, 'final_states': final_states_escaped})
                     if failed_iids: messagebox.showerror("Redo Error", f"Errors redoing {action_type} for: {', '.join(failed_iids)}.", parent=self.root)
 
-
             elif action_type == 'single' and 'iid' in action:
-                # Single item edit
-                iid = action['iid']; old_value = action['old_value']; new_value = action['new_value']
+                iid = action['iid']; old_value_escaped = action['old_value']; new_value_escaped = action['new_value']
                 first_iid = iid
-                # Perform update forward to new value
-                if self._update_tree_and_data(iid, new_value, is_undo_redo=True):
-                    # Push original action details back to undo stack
-                    self.undo_stack.append({'type': 'single', 'iid': iid, 'old_value': old_value, 'new_value': new_value})
+                if self._update_tree_and_data(iid, new_value_escaped, is_undo_redo=True): # Pass editor-escaped
+                    self.undo_stack.append({'type': 'single', 'iid': iid, 'old_value': old_value_escaped, 'new_value': new_value_escaped})
                 else:
-                    # Update failed, don't add back to undo stack
                     success = False
                     messagebox.showerror("Redo Error", f"Could not redo change for item {iid}.", parent=self.root)
             else:
@@ -1971,10 +1962,9 @@ class JsonEditorApp:
         except Exception as e:
             print(f"Unexpected error during Redo: {e}"); traceback.print_exc()
             success = False
-            self.undo_stack.clear() # Clear undo if unexpected error occurs
+            self.undo_stack.clear()
 
         self._update_undo_redo_state()
-        # Try to focus the first affected item for context
         if first_iid and self.tree.winfo_exists() and self.tree.exists(first_iid):
              try: self.tree.see(first_iid); self.tree.selection_set(first_iid)
              except tk.TclError: pass
@@ -2058,7 +2048,7 @@ class JsonEditorApp:
         if is_data_row:
             try:
                 clipboard_content = self.root.clipboard_get()
-                if isinstance(clipboard_content, str): can_paste = True
+                if isinstance(clipboard_content, str): can_paste = True # Text in clipboard allows paste
             except tk.TclError: can_paste = False # Clipboard empty or invalid
 
         # Apply theme colors
@@ -2084,9 +2074,9 @@ class JsonEditorApp:
         if iid in self.item_id_map: # Check if it's a data row
             try:
                 if self.tree.exists(iid):
-                    dialogue_text = self.tree.set(iid, DIALOGUE_COLUMN_ID)
+                    dialogue_text_escaped = self.tree.set(iid, DIALOGUE_COLUMN_ID) # editor-escaped
                     self.root.clipboard_clear()
-                    self.root.clipboard_append(dialogue_text)
+                    self.root.clipboard_append(dialogue_text_escaped) # Copy editor-escaped version
                 else: print(f"Warning: Could not copy from non-existent item {iid}.")
             except tk.TclError as e: print(f"Warning: TclError during copy for item {iid}: {e}")
             except Exception as e: print(f"Error during copy for {iid}: {e}"); messagebox.showerror("Copy Error", f"Could not copy text:\n{e}", parent=self.root)
@@ -2104,12 +2094,12 @@ class JsonEditorApp:
         if iid in self.item_id_map: # Check if it's a data row
             try:
                 if not self.tree.exists(iid): return "break" if event else None
-                dialogue_text = self.tree.set(iid, DIALOGUE_COLUMN_ID)
+                dialogue_text_escaped = self.tree.set(iid, DIALOGUE_COLUMN_ID) # editor-escaped
                 # Copy to clipboard first
                 self.root.clipboard_clear()
-                self.root.clipboard_append(dialogue_text)
+                self.root.clipboard_append(dialogue_text_escaped) # Copy editor-escaped version
                 # Then clear the text in the tree/data (logs undo)
-                if not self._update_tree_and_data(iid, ""):
+                if not self._update_tree_and_data(iid, ""): # "" is valid editor-escaped empty string
                      print(f"Warning: Cut failed for {iid} because update failed. Clearing clipboard.")
                      self.root.clipboard_clear() # Clear clipboard if update failed
             except tk.TclError as e: print(f"Warning: TclError during cut for item {iid}: {e}"); self.root.clipboard_clear()
@@ -2127,14 +2117,14 @@ class JsonEditorApp:
 
         if iid in self.item_id_map: # Check if it's a data row
             try:
-                clipboard_text = self.root.clipboard_get()
-                if not isinstance(clipboard_text, str):
+                clipboard_text_escaped = self.root.clipboard_get() # Assume clipboard has editor-escaped text
+                if not isinstance(clipboard_text_escaped, str):
                     raise TypeError("Clipboard does not contain text.")
                 if not self.tree.exists(iid):
                     print(f"Warning: Cannot paste into non-existent item {iid}")
                     return "break" if event else None
-                # Update the tree/data with clipboard content (logs undo)
-                self._update_tree_and_data(iid, clipboard_text)
+                # Update the tree/data with clipboard content (assumed editor-escaped)
+                self._update_tree_and_data(iid, clipboard_text_escaped)
             except tk.TclError:
                 messagebox.showwarning("Paste Error", "Clipboard is empty or cannot be accessed.", parent=self.root)
             except TypeError as e:
@@ -2149,11 +2139,10 @@ class JsonEditorApp:
 
     # --- Saving Logic ---
     def save_all_files(self):
-        """Saves ALL successfully processed files to the output folder.""" # <-- Docstring updated
+        """Saves ALL successfully processed files to the output folder."""
         output_dir = self.output_folder.get()
         input_dir = self.input_folder.get()
 
-        # Pre-checks
         if not output_dir or not input_dir:
             messagebox.showerror("Save Error", "Input and Output folders must be selected.", parent=self.root)
             return
@@ -2168,7 +2157,6 @@ class JsonEditorApp:
             messagebox.showerror("Save Error", f"Output folder path is invalid or could not be created:\n{p_output_dir}\nError: {e}", parent=self.root)
             return
 
-        # Save any pending edit before starting the save process
         if self.edit_entry:
             if self.edit_item_id and self.tree.exists(self.edit_item_id):
                 self._save_edit(self.edit_item_id, DIALOGUE_COLUMN_ID)
@@ -2178,49 +2166,35 @@ class JsonEditorApp:
         self.status_label.config(text="Status: Preparing to save...")
         self.root.update_idletasks()
 
-        saved_count = 0
-        error_files = set()
-        # skipped_count = 0 # No longer needed as we save all
+        saved_count = 0; error_files = set(); something_saved_successfully = False
         files_to_process = len(self.file_data)
-        something_saved_successfully = False # Flag to clear undo history
 
         try:
             for file_index, entry in enumerate(self.file_data):
                 current_file_path = entry.get('path')
                 file_format = entry.get('format')
-                original_json_content = entry.get("json_content") # The structure loaded initially
+                original_json_content = entry.get("json_content")
 
-                # Basic validation for the entry
                 if not current_file_path or file_format == FORMAT_UNKNOWN or not isinstance(original_json_content, list):
                      print(f"Error: Invalid data for file index {file_index} (Path: {current_file_path}, Format: {file_format}, ContentType: {type(original_json_content)}). Skipping save.")
-                     error_files.add(f"File Index {file_index} (Invalid Data)")
-                     continue
+                     error_files.add(f"File Index {file_index} (Invalid Data)"); continue
 
                 current_file_path_name = current_file_path.name
                 self.status_label.config(text=f"Status: Processing {file_index+1}/{files_to_process}: {current_file_path_name}")
                 self.root.update_idletasks()
 
-                # --- Reconstruct Content ---
-                # Create a working copy of the original JSON structure.
                 try:
-                    # json_content_to_save = copy.deepcopy(original_json_content)
                     json_content_to_save = [item.copy() if isinstance(item, (dict, list)) else item for item in original_json_content]
                 except Exception as copy_e:
                     print(f"Error: Failed to copy content for {current_file_path_name}: {copy_e}. Skipping save.")
-                    error_files.add(f"{current_file_path_name} (Copy Error)")
-                    continue
+                    error_files.add(f"{current_file_path_name} (Copy Error)"); continue
 
-                # --- Update the content based on current editor state ---
-                # This loop now just updates the json_content_to_save structure
-                # based on the data in self.file_data (edited or not).
                 for string_info in entry.get("en_strings", []):
-                    pending_save_string = None # Variable to hold the string intended for saving
+                    pending_save_string_raw = None # This will store the raw string for JSON
 
                     if file_format == FORMAT_DLGE:
                         original_item_index = string_info.get("original_item_index")
                         segments = string_info.get("segments", [])
-                        # original_string_baseline = string_info.get("original_string", None) # Baseline check removed below
-
                         if not (isinstance(original_item_index, int) and 0 <= original_item_index < len(json_content_to_save)):
                             print(f"Error: Invalid original item index {original_item_index} for DLGE {current_file_path_name}.")
                             error_files.add(f"{current_file_path_name} (DLGE Bad Index)"); continue
@@ -2229,26 +2203,26 @@ class JsonEditorApp:
                             print(f"Warning: Structure mismatch at DLGE index {original_item_index} in {current_file_path_name}. Skipping item.")
                             error_files.add(f"{current_file_path_name} (DLGE Struct Mismatch)"); continue
 
-                        reconstructed_parts = []
+                        reconstructed_parts_raw = []
                         valid_segments = True
                         for segment in segments:
                             if not isinstance(segment, dict) or "text" not in segment:
                                 print(f"Error: Invalid segment format DLGE index {original_item_index} in {current_file_path_name}."); error_files.add(f"{current_file_path_name} (Bad Segment)"); valid_segments = False; break
                             prefix = segment.get("original_prefix", "") or ""
-                            segment_text = segment["text"]
-                            reconstructed_parts.append(prefix + segment_text)
+                            editor_segment_text = segment["text"] # This is editor-escaped
+                            raw_segment_text_for_json = custom_unescape_from_editor(editor_segment_text)
+                            reconstructed_parts_raw.append(prefix + raw_segment_text_for_json)
                         if not valid_segments: continue
-
-                        final_reconstructed_string = "".join(reconstructed_parts)
-                        target_item["String"] = final_reconstructed_string # Update the content to save
-                        pending_save_string = final_reconstructed_string # Mark for baseline update
+                        
+                        final_reconstructed_string_raw = "".join(reconstructed_parts_raw)
+                        target_item["String"] = final_reconstructed_string_raw
+                        pending_save_string_raw = final_reconstructed_string_raw
 
                     elif file_format == FORMAT_LOCR:
                         lang_block_idx = string_info.get("original_lang_block_index")
                         string_item_list_idx = string_info.get("original_string_item_index")
                         string_hash = string_info.get("string_hash")
-                        current_text = string_info.get("text")
-                        # original_text_baseline = string_info.get("original_text", None) # Baseline check removed below
+                        editor_text = string_info.get("text") # This is editor-escaped
 
                         if not (isinstance(lang_block_idx, int) and 0 <= lang_block_idx < len(json_content_to_save) and
                                 isinstance(json_content_to_save[lang_block_idx], list) and
@@ -2260,17 +2234,14 @@ class JsonEditorApp:
                         if not (isinstance(target_dict, dict) and "String" in target_dict and target_dict.get("StringHash") == string_hash):
                             print(f"Warning: Structure or hash mismatch at LOCR index [{lang_block_idx}][{string_item_list_idx}] in {current_file_path_name}.")
                             error_files.add(f"{current_file_path_name} (LOCR Mismatch)"); continue
+                        
+                        raw_text_for_json = custom_unescape_from_editor(editor_text)
+                        target_dict["String"] = raw_text_for_json
+                        pending_save_string_raw = raw_text_for_json
+                    
+                    if pending_save_string_raw is not None:
+                         string_info["_pending_save_value_raw"] = pending_save_string_raw # Store raw for baseline
 
-                        target_dict["String"] = current_text # Update the content to save
-                        pending_save_string = current_text # Mark for baseline update
-
-                    # Store the string value intended for saving to update baseline later
-                    if pending_save_string is not None:
-                         string_info["_pending_save_value"] = pending_save_string
-
-
-                # --- Always Write the file to output directory ---
-                # The 'if modified_in_file:' check is removed. We always try to save.
                 output_path = p_output_dir / current_file_path_name
                 try:
                     with open(output_path, 'w', encoding='utf-8') as f:
@@ -2278,47 +2249,38 @@ class JsonEditorApp:
                     saved_count += 1
                     something_saved_successfully = True
 
-                    # --- IMPORTANT: Update internal baseline after successful save ---
-                    # This prevents the file being marked as modified again if saved immediately
                     for string_info in entry.get("en_strings", []):
-                        if "_pending_save_value" in string_info:
+                        if "_pending_save_value_raw" in string_info:
+                            raw_saved_value = string_info["_pending_save_value_raw"]
                             if file_format == FORMAT_DLGE:
-                                string_info["original_string"] = string_info["_pending_save_value"]
+                                string_info["original_string"] = raw_saved_value # Update baseline with raw
                             elif file_format == FORMAT_LOCR:
-                                string_info["original_text"] = string_info["_pending_save_value"]
-                            del string_info["_pending_save_value"] # Clean up temp key
+                                string_info["original_text"] = raw_saved_value # Update baseline with raw
+                            del string_info["_pending_save_value_raw"]
 
-                except (IOError, TypeError) as e: # Catch potential type errors during dump too
+                except (IOError, TypeError) as e:
                     print(f"Error writing file {output_path}: {e}")
                     messagebox.showerror("Save Error", f"Failed to save {output_path.name}:\n{e}", parent=self.root)
                     error_files.add(f"{current_file_path_name} (Write Error)")
-                    # If save failed, do NOT update the baseline, clean up temp key
                     for string_info in entry.get("en_strings", []):
-                        if "_pending_save_value" in string_info: del string_info["_pending_save_value"]
+                        if "_pending_save_value_raw" in string_info: del string_info["_pending_save_value_raw"]
                 except Exception as e:
                     print(f"Unexpected error writing file {output_path}: {e}")
                     traceback.print_exc()
                     messagebox.showerror("Save Error", f"Unexpected error saving {output_path.name}:\n{e}", parent=self.root)
                     error_files.add(f"{current_file_path_name} (Unexpected Write Error)")
-                    # If save failed, do NOT update the baseline, clean up temp key
                     for string_info in entry.get("en_strings", []):
-                        if "_pending_save_value" in string_info: del string_info["_pending_save_value"]
+                        if "_pending_save_value_raw" in string_info: del string_info["_pending_save_value_raw"]
 
-            # --- Final Status and Reporting ---
-            # Simplified message as 'skipped' is no longer relevant here
             final_status_text = f"Status: Save complete. Saved: {saved_count}/{files_to_process}, Errors: {len(error_files)}."
             self.status_label.config(text=final_status_text)
-
             result_message = f"Processed {files_to_process} file(s).\nSaved {saved_count} file(s) to:\n{output_dir}"
-
             if error_files:
                 error_list_str = "\n - ".join(sorted(list(error_files)))
                 messagebox.showwarning("Save Complete with Issues", f"{result_message}\n\nEncountered issues saving or processing {len(error_files)} file(s):\n - {error_list_str}\n(Check console log)", parent=self.root)
             else:
-                 # Only show success if no errors
                  messagebox.showinfo("Save Successful", result_message, parent=self.root)
 
-            # Clear undo history if at least one file was saved successfully
             if something_saved_successfully:
                 self._clear_undo_redo()
                 print("Undo/Redo history cleared after successful save.")
@@ -2331,7 +2293,7 @@ class JsonEditorApp:
 
     # --- Text Export/Import ---
     def _export_dialogue(self):
-        """Exports text from the treeview to a TSV file."""
+        """Exports text from the treeview to a TSV file. Text is editor-escaped."""
         if not self.file_data or not self.item_id_map:
              messagebox.showwarning("Export Error", "No data loaded to export.", parent=self.root)
              return
@@ -2350,13 +2312,12 @@ class JsonEditorApp:
         try:
             with open(export_path, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f, delimiter='\t', quoting=csv.QUOTE_MINIMAL, lineterminator='\n')
-                # Header row
                 writer.writerow(['# TreeItemID', 'DialogueText'])
-                # Metadata comments
                 f.write(f'# ExportedFromAppVersion: {APP_VERSION}\n')
                 f.write(f'# SourceInputFolder: {self.input_folder.get()}\n')
+                f.write(f'# Note: DialogueText is in editor-escaped format (e.g., \\n for newline).\n')
 
-                # Get editable items in current tree order
+
                 all_iids_in_order = []
                 if self.tree.winfo_exists(): all_iids_in_order = self.tree.get_children('')
                 editable_iids = [iid for iid in all_iids_in_order if iid in self.item_id_map]
@@ -2364,9 +2325,8 @@ class JsonEditorApp:
                 for iid in editable_iids:
                     try:
                         if self.tree.exists(iid):
-                            dialogue_text = self.tree.set(iid, DIALOGUE_COLUMN_ID)
-                            # Write IID and Text, separated by tab
-                            writer.writerow([iid, dialogue_text])
+                            dialogue_text_escaped = self.tree.set(iid, DIALOGUE_COLUMN_ID) # editor-escaped
+                            writer.writerow([iid, dialogue_text_escaped])
                             exported_count += 1
                         else: print(f"Warning: Skipping missing item {iid} during export."); errors += 1
                     except tk.TclError: print(f"Warning: TclError accessing item {iid} during export."); errors += 1
@@ -2391,7 +2351,7 @@ class JsonEditorApp:
              self.status_label.config(text="Status: Export failed.")
 
     def _import_dialogue(self):
-        """Imports text from a TSV file into the treeview."""
+        """Imports text from a TSV file into the treeview. Expects editor-escaped text."""
         if not self.file_data or not self.item_id_map:
              messagebox.showwarning("Import Error", "Load data first before importing.", parent=self.root)
              return
@@ -2407,7 +2367,7 @@ class JsonEditorApp:
         imported_lines = []
         source_folder_in_file = None
         app_version_in_file = None
-        status_final = "Status: Import finished or cancelled." # Default final status
+        status_final = "Status: Import finished or cancelled."
 
         try:
             with open(import_path, 'r', newline='', encoding='utf-8') as f:
@@ -2416,35 +2376,29 @@ class JsonEditorApp:
                     stripped_line = line.strip()
                     if stripped_line.startswith('# SourceInputFolder:'): source_folder_in_file = stripped_line.split(':', 1)[1].strip()
                     elif stripped_line.startswith('# ExportedFromAppVersion:'): app_version_in_file = stripped_line.split(':', 1)[1].strip()
-                    elif stripped_line.startswith('#'): continue # Ignore other comments
-                    elif stripped_line: lines_to_parse.append(line) # Add non-empty, non-comment lines
+                    elif stripped_line.startswith('#'): continue
+                    elif stripped_line: lines_to_parse.append(line)
 
                 if not lines_to_parse:
                     messagebox.showwarning("Import Warning", "No data lines found in file (excluding comments and blank lines).", parent=self.root)
                     return
 
-                # Use csv.reader on the collected lines
                 reader = csv.reader(lines_to_parse, delimiter='\t', quoting=csv.QUOTE_MINIMAL)
-                header_skipped = False
                 invalid_rows = 0
 
                 for i, row in enumerate(reader):
-                    # Try to detect header row (optional)
                     if i == 0 and len(row) >= 2 and row[0].strip().lower() == '#treeitemid' and row[1].strip().lower() == 'dialoguetext':
-                        header_skipped = True
-                        continue # Skip header
+                        continue 
 
-                    # Process data rows
                     if len(row) >= 2:
                         iid = row[0].strip()
-                        text = row[1] # Keep original spacing/newlines from TSV
-                        if iid: # Must have an IID
-                            imported_lines.append({'iid': iid, 'text': text})
+                        text_escaped = row[1] # Assumed to be editor-escaped
+                        if iid:
+                            imported_lines.append({'iid': iid, 'text': text_escaped})
                         else:
                             print(f"Warning: Skipping row {i+1} (after comments) due to missing IID: {row}")
                             invalid_rows += 1
                     else:
-                        # Handle rows with fewer than 2 columns
                         print(f"Warning: Skipping invalid data row {i+1} (after comments): {row}")
                         invalid_rows += 1
 
@@ -2454,75 +2408,63 @@ class JsonEditorApp:
                 messagebox.showwarning("Import Warning", msg, parent=self.root)
                 return
 
-            # --- Confirmation Dialog ---
             confirm_msg_parts = [f"Found {len(imported_lines)} lines with valid IIDs to import from:\n{pathlib.Path(import_path).name}"]
             if invalid_rows > 0: confirm_msg_parts.append(f"(Skipped {invalid_rows} invalid rows)")
-
-            # Version Check
             if app_version_in_file and app_version_in_file != APP_VERSION:
                 confirm_msg_parts.append(f"\nWARNING: File exported from v{app_version_in_file}, current is v{APP_VERSION}.")
-
-            # Folder Check
             if source_folder_in_file:
                  current_input = self.input_folder.get()
                  try:
                     norm_file_source = str(pathlib.Path(source_folder_in_file).resolve())
                     norm_current_input = str(pathlib.Path(current_input).resolve()) if current_input else ""
                     is_win = platform.system() == "Windows"
-                    # Case-insensitive compare on Windows
                     if norm_current_input and (norm_file_source.lower() != norm_current_input.lower() if is_win else norm_file_source != norm_current_input):
                          confirm_msg_parts.append(f"\n\nWARNING: File's source folder mismatches current input folder!")
                          confirm_msg_parts.append(f"  File: {source_folder_in_file}")
                          confirm_msg_parts.append(f"  Current: {current_input}")
                  except Exception as path_e: print(f"Warning: Could not compare source folders: {path_e}")
-
-            confirm_msg_parts.append(f"\n\nOverwrite current text in matching rows?\n(Can be undone as a single step)")
+            confirm_msg_parts.append(f"\n\nNote: Text from file is assumed to be in editor-escaped format (e.g., \\\\n for newline).")
+            confirm_msg_parts.append(f"Overwrite current text in matching rows?\n(Can be undone as a single step)")
             confirm_msg = "\n".join(confirm_msg_parts)
 
             if not messagebox.askyesno("Confirm Import", confirm_msg, parent=self.root): return
 
-            # --- Perform Import ---
             self.status_label.config(text="Status: Importing..."); self.root.update_idletasks()
             updated_count, skipped_count, error_count = 0, 0, 0
-            initial_states, final_states = {}, {} # For compound undo
+            initial_states, final_states = {}, {}
             valid_iids_in_tree = set(self.item_id_map.keys())
 
-            # Phase 1: Collect initial states for items that will change
             for item in imported_lines:
-                iid = item['iid']; new_text = item['text']
+                iid = item['iid']; new_text_escaped = item['text'] # editor-escaped from file
                 if iid in valid_iids_in_tree:
                     try:
-                        if not self.tree.exists(iid): skipped_count += 1; continue # Item exists in map but not tree? Skip.
-                        current_text = self.tree.set(iid, DIALOGUE_COLUMN_ID)
-                        if current_text != new_text:
-                            initial_states[iid] = current_text # Store original text for undo
-                            final_states[iid] = new_text     # Store imported text
+                        if not self.tree.exists(iid): skipped_count += 1; continue
+                        current_text_escaped = self.tree.set(iid, DIALOGUE_COLUMN_ID) # editor-escaped
+                        if current_text_escaped != new_text_escaped:
+                            initial_states[iid] = current_text_escaped
+                            final_states[iid] = new_text_escaped
                         else:
-                            skipped_count += 1 # No change needed
+                            skipped_count += 1
                     except tk.TclError: print(f"Warning: TclError getting initial state for {iid}."); skipped_count += 1; error_count += 1
                     except Exception as e: print(f"Error getting initial state for {iid}: {e}"); skipped_count += 1; error_count += 1
                 else:
-                    skipped_count += 1 # IID from file not found in current data
+                    skipped_count += 1
 
-            if not final_states: # Check if any changes are actually needed
+            if not final_states:
                  messagebox.showinfo("Import Info", f"No matching items found needing updates.\nSkipped/Not Found: {skipped_count}", parent=self.root)
                  status_final = f"Status: Import complete. No changes. Skipped: {skipped_count}";
                  self.status_label.config(text=status_final); return
 
-            # Phase 2: Apply updates
             self.status_label.config(text=f"Status: Applying {len(final_states)} updates..."); self.root.update_idletasks()
-            restored_states_for_undo = {} # Store the actual initial states for undo
-            for iid, text_to_import in final_states.items():
-                 current_text_before_update = initial_states.get(iid, "[ERROR: Unknown initial state]")
-                 restored_states_for_undo[iid] = current_text_before_update # Store original for undo record
-                 # Perform update, mark as undo/redo action
-                 if self._update_tree_and_data(iid, text_to_import, is_undo_redo=True):
+            restored_states_for_undo = {}
+            for iid, text_to_import_escaped in final_states.items():
+                 current_text_before_update_escaped = initial_states.get(iid, "[ERROR: Unknown initial state]")
+                 restored_states_for_undo[iid] = current_text_before_update_escaped
+                 if self._update_tree_and_data(iid, text_to_import_escaped, is_undo_redo=True): # Pass editor-escaped
                      updated_count += 1
                  else:
                      error_count += 1; print(f"Error importing data for item {iid}.")
-                     # Keep original text in restored_states_for_undo if update failed
-
-            # Add compound undo step if successful updates occurred
+            
             if updated_count > 0:
                 self.undo_stack.append({'type': 'import_text', 'initial_states': restored_states_for_undo, 'final_states': final_states})
                 self.redo_stack.clear(); self._update_undo_redo_state()
@@ -2545,7 +2487,6 @@ class JsonEditorApp:
             print(f"Import Error: {e}"); traceback.print_exc()
             status_final = "Status: Import failed (Unexpected Error)."
         finally:
-            # Update status bar unless it was already set in case of no changes needed
             self.status_label.config(text=status_final); self.root.update_idletasks()
 
     # --- Help / About Dialogs ---
@@ -2563,7 +2504,8 @@ class JsonEditorApp:
                             "- Copy/Cut/Paste.\n"
                             "- Open original file / folders.\n"
                             "- Selectable Themes (Light/Dark/Red-Dark).\n"
-                            "- Remembers state (folders, theme, search, window size).\n\n"
+                            "- Remembers state (folders, theme, search, window size).\n"
+                            "- Displays newlines (\\n), tabs (\\t) etc. as literals in editor.\n\n" # Added note
                             "Developed by: MrGamesKingPro\n"
                             "GitHub: https://github.com/MrGamesKingPro\n",
                             parent=self.root)
@@ -2584,14 +2526,16 @@ class JsonEditorApp:
                             "3. Viewing Data:\n"
                             "   - Treeview shows items grouped by file.\n"
                             "   - Columns: Line/ID, Timecode/Hash, Text (Editable).\n"
-                            "   - Double-click grey file header to open the original file.\n\n"
+                            "   - Double-click grey file header to open the original file.\n"
+                            "   - Note: Special characters like newlines (\\n), tabs (\\t), and literal backslashes (\\\\) are shown as these visible codes in the Text column.\n\n" # Added note
                             "4. Editing:\n"
                             "   - Double-click a cell in the 'Text' column.\n"
+                            "   - Edit the text, using \\n for newlines, \\t for tabs, \\\\ for a literal backslash, etc.\n"
                             "   - Press Enter/Return to save the edit.\n"
                             "   - Press Escape to cancel the edit.\n"
                             "   - Clicking outside the edit box also saves (unless Escape was pressed).\n\n"
                             "5. Search & Replace:\n"
-                            "   - Enter text in 'Search Text' field.\n"
+                            "   - Enter text in 'Search Text' field. To search for a newline, type \\n. For a literal backslash, type \\\\.\n"
                             "   - Find: Jumps to the next match sequentially.\n"
                             "   - Find All: Highlights all matches.\n"
                             "   - Next/Previous: Navigate between matches.\n"
@@ -2603,19 +2547,19 @@ class JsonEditorApp:
                             "     - " + self._get_accelerator("C") + " (Copy)\n"
                             "     - " + self._get_accelerator("X") + " (Cut)\n"
                             "     - " + self._get_accelerator("V") + " (Paste)\n"
-                            "   - Works on selected 'Text' cell in the tree or within text entry fields.\n\n"
+                            "   - Works on selected 'Text' cell in the tree or within text entry fields. Copied/pasted text is in the editor-escaped format.\n\n"
                             "7. Undo/Redo:\n"
                             "   - Use Edit menu, context menu, or shortcuts:\n"
                             "     - " + self._get_accelerator("Z") + " (Undo)\n"
                             "     - " + self._get_redo_accelerator() + " (Redo)\n"
                             "   - Applies to edits, cut, paste, replace, replace all, import.\n\n"
                             "8. Export/Import (File Menu):\n"
-                            "   - Export: Saves current text to a TSV file (Tab Separated).\n"
-                            "   - Import: Loads text from a TSV file, matching based on internal ID.\n"
+                            "   - Export: Saves current text to a TSV file. Text is in editor-escaped format.\n"
+                            "   - Import: Loads text from a TSV file, matching based on internal ID. Expects editor-escaped text.\n"
                             "   - Useful for external editing (e.g., spreadsheets).\n\n"
                             "9. Save All Changes:\n"
                             "   - Use File menu, button, or shortcut (" + self._get_accelerator("S") + ").\n"
-                            "   - Saves *only* files with modifications (compared to last load/save) to the Output folder.\n"
+                            "   - Saves all files to the Output folder, converting editor-escaped text back to JSON standard strings.\n"
                             "   - Updates the internal 'baseline' for comparison.\n"
                             "   - Clears Undo/Redo history after successful save.\n\n"
                             "10. Theme: Change via View > Theme menu.\n\n"
